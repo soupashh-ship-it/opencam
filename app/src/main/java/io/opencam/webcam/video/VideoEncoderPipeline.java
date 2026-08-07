@@ -10,6 +10,7 @@ import io.opencam.webcam.util.Logs;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 /**
  * H.264/AVC or H.265/HEVC encoder using {@link MediaCodec} with surface input. The camera
@@ -35,6 +36,9 @@ public class VideoEncoderPipeline {
 
     /** Last codec-config buffer (SPS/PPS), replayed to each new client. */
     private volatile byte[] lastConfig;
+
+    /** Reused per-frame output buffer — the sink writes synchronously. */
+    private byte[] outBuf;
 
     private final MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
 
@@ -120,6 +124,7 @@ public class VideoEncoderPipeline {
             try {
                 idx = codec.dequeueOutputBuffer(info, 10000);
             } catch (IllegalStateException e) {
+                // codec.stop()/release() raced the pump (normal during teardown)
                 break;
             }
             if (idx == MediaCodec.INFO_TRY_AGAIN_LATER) {
@@ -131,27 +136,39 @@ public class VideoEncoderPipeline {
             if (idx < 0) {
                 continue;
             }
-            ByteBuffer buffer = codec.getOutputBuffer(idx);
+            ByteBuffer buffer;
+            try {
+                buffer = codec.getOutputBuffer(idx);
+            } catch (IllegalStateException e) {
+                break; // codec released while we were mid-frame
+            }
             int size = info.size;
             boolean config = (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
             boolean eos = (info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
-            byte[] data = null;
             if (size > 0 && buffer != null) {
-                data = new byte[size];
+                if (outBuf == null || outBuf.length < size) {
+                    outBuf = new byte[size];
+                }
                 buffer.position(0);
                 buffer.limit(size);
-                buffer.get(data);
+                buffer.get(outBuf, 0, size);
             }
-            codec.releaseOutputBuffer(idx, false);
+            try {
+                codec.releaseOutputBuffer(idx, false);
+            } catch (IllegalStateException e) {
+                break;
+            }
 
-            if (data != null) {
+            if (size > 0 && buffer != null) {
                 if (config) {
-                    lastConfig = data;
+                    // The config is retained (replayed to future clients) — it must
+                    // be a private copy, not the reused per-frame buffer.
+                    lastConfig = Arrays.copyOf(outBuf, size);
                 }
                 FrameSink s = sink;
                 if (s != null) {
                     try {
-                        s.writeFrame(info.presentationTimeUs, data, data.length);
+                        s.writeFrame(info.presentationTimeUs, outBuf, size);
                     } catch (IOException e) {
                         s.close();
                         if (sink == s) {

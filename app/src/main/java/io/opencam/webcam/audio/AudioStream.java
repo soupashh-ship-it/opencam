@@ -114,54 +114,74 @@ public class AudioStream {
     }
 
     private void pump() {
-        recorder.startRecording();
+        try {
+            recorder.startRecording();
+        } catch (Exception e) {
+            Logs.e("audio record start failed", e);
+            return;
+        }
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         byte[] pcm = new byte[8192];
+        // Reused per-frame AAC buffer — the sink writes synchronously, so it can be
+        // handed to the next frame without allocating a fresh array each time.
+        byte[] aac = new byte[1024];
 
         while (running) {
-            // feed the encoder
-            int n = recorder.read(pcm, 0, pcm.length);
-            if (n <= 0) {
-                continue;
-            }
-            int inIdx;
-            while ((inIdx = codec.dequeueInputBuffer(1000)) < 0) {
-                if (!running) {
-                    return;
+            try {
+                // feed the encoder
+                int n = recorder.read(pcm, 0, pcm.length);
+                if (n <= 0) {
+                    continue;
                 }
-            }
-            ByteBuffer input = codec.getInputBuffer(inIdx);
-            input.clear();
-            // Guard against devices whose AAC input buffers are smaller than the PCM chunk.
-            int toWrite = Math.min(n, input.remaining());
-            if (toWrite > 0) {
-                input.put(pcm, 0, toWrite);
-            }
-            codec.queueInputBuffer(inIdx, 0, toWrite, System.nanoTime() / 1000, 0);
+                int inIdx;
+                while ((inIdx = codec.dequeueInputBuffer(1000)) < 0) {
+                    if (!running) {
+                        return;
+                    }
+                }
+                ByteBuffer input = codec.getInputBuffer(inIdx);
+                input.clear();
+                // Guard against devices whose AAC input buffers are smaller than the PCM chunk.
+                int toWrite = Math.min(n, input.remaining());
+                if (toWrite > 0) {
+                    input.put(pcm, 0, toWrite);
+                }
+                codec.queueInputBuffer(inIdx, 0, toWrite, System.nanoTime() / 1000, 0);
 
-            // drain the encoder
-            int outIdx;
-            while ((outIdx = codec.dequeueOutputBuffer(info, 1000)) >= 0) {
-                ByteBuffer output = codec.getOutputBuffer(outIdx);
-                int size = info.size;
-                byte[] aac = new byte[size];
-                if (size > 0 && output != null) {
-                    output.position(0);
-                    output.limit(size);
-                    output.get(aac);
-                }
-                codec.releaseOutputBuffer(outIdx, false);
-                FrameSink s = sink;
-                if (s != null && size > 0) {
-                    try {
-                        s.writeFrame(info.presentationTimeUs, aac, size);
-                    } catch (IOException e) {
-                        s.close();
-                        if (sink == s) {
-                            sink = null;
+                // drain the encoder
+                int outIdx;
+                while ((outIdx = codec.dequeueOutputBuffer(info, 1000)) >= 0) {
+                    ByteBuffer output = codec.getOutputBuffer(outIdx);
+                    int size = info.size;
+                    if (size > 0 && output != null) {
+                        if (aac.length < size) {
+                            aac = new byte[size];
+                        }
+                        output.position(0);
+                        output.limit(size);
+                        output.get(aac, 0, size);
+                    }
+                    codec.releaseOutputBuffer(outIdx, false);
+                    FrameSink s = sink;
+                    if (s != null && size > 0 && output != null) {
+                        try {
+                            s.writeFrame(info.presentationTimeUs, aac, size);
+                        } catch (IOException e) {
+                            s.close();
+                            if (sink == s) {
+                                sink = null;
+                            }
                         }
                     }
                 }
+            } catch (Exception e) {
+                // recorder.read()/codec calls throw IllegalStateException after stop()
+                // releases them from the service thread — exit cleanly instead of
+                // crashing the audio thread with an uncaught exception.
+                if (running) {
+                    Logs.e("audio pump error", e);
+                }
+                break;
             }
         }
         Logs.i("audio stream stopped");

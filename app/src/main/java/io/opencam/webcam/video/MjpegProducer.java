@@ -10,7 +10,6 @@ import android.os.HandlerThread;
 
 import io.opencam.webcam.net.FrameSink;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -59,14 +58,15 @@ public abstract class MjpegProducer {
 
     protected abstract void onImageAvailable(ImageReader reader);
 
-    /** Hand a JPEG to the current sink (dropped when no client is attached). */
-    protected void deliver(byte[] jpeg) {
+    /** Hand a JPEG to the current sink (dropped when no client is attached).
+     *  The sink writes synchronously, so the caller's buffer may be reused next frame. */
+    protected void deliver(byte[] jpeg, int len) {
         FrameSink s = sink;
         if (s == null) {
             return;
         }
         try {
-            s.writeFrame(System.nanoTime() / 1000L, jpeg, jpeg.length);
+            s.writeFrame(System.nanoTime() / 1000L, jpeg, len);
         } catch (IOException e) {
             s.close();
             // Only clear if we still own the sink — a newer client may have attached
@@ -88,13 +88,29 @@ public abstract class MjpegProducer {
         }
     }
 
+    /**
+     * ByteArrayOutputStream subclass that exposes its internal buffer so a JPEG can be
+     * handed to the (synchronous) sink without the per-frame toByteArray() copy — at
+     * 1080p+ quality 92 a JPEG is ~300-800 KB, so this removes a large allocation per
+     * frame at 30 fps.
+     */
+    private static final class GrowBuf extends java.io.ByteArrayOutputStream {
+        GrowBuf(int size) {
+            super(size);
+        }
+
+        byte[] buffer() {
+            return buf;
+        }
+    }
+
     /** Default implementation: YUV_420_888 → NV21 → YuvImage → JPEG. Works on every device. */
     public static MjpegProducer yuv(int width, int height, int quality) {
         return new MjpegProducer(width, height, quality, ImageFormat.YUV_420_888) {
             // Buffers are reused across frames (this producer runs single-threaded on its
             // dedicated encode thread) to avoid ~1.5 byte-per-pixel allocation churn.
             private byte[] nv21Buf;
-            private final ByteArrayOutputStream jpegBuf = new ByteArrayOutputStream(64 * 1024);
+            private final GrowBuf jpegBuf = new GrowBuf(64 * 1024);
 
             @Override
             protected void onImageAvailable(ImageReader reader) {
@@ -117,7 +133,7 @@ public abstract class MjpegProducer {
                     YuvImage yuv = new YuvImage(nv21Buf, ImageFormat.NV21, width, height, null);
                     jpegBuf.reset();
                     yuv.compressToJpeg(new Rect(0, 0, width, height), quality, jpegBuf);
-                    deliver(jpegBuf.toByteArray());
+                    deliver(jpegBuf.buffer(), jpegBuf.size());
                 } catch (Exception e) {
                     // drop the frame
                 } finally {
@@ -136,6 +152,9 @@ public abstract class MjpegProducer {
      */
     public static MjpegProducer jpegReader(int width, int height, int quality) {
         return new MjpegProducer(width, height, quality, ImageFormat.JPEG) {
+            // Reused across frames — the sink writes synchronously.
+            private byte[] jpegOut;
+
             @Override
             protected void onImageAvailable(ImageReader reader) {
                 Image image = null;
@@ -150,9 +169,11 @@ public abstract class MjpegProducer {
                     Image.Plane plane = image.getPlanes()[0];
                     ByteBuffer buf = plane.getBuffer();
                     int size = buf.remaining();
-                    byte[] jpeg = new byte[size];
-                    buf.get(jpeg);
-                    deliver(jpeg);
+                    if (jpegOut == null || jpegOut.length < size) {
+                        jpegOut = new byte[size];
+                    }
+                    buf.get(jpegOut, 0, size);
+                    deliver(jpegOut, size);
                 } catch (Exception e) {
                     // drop the frame
                 } finally {

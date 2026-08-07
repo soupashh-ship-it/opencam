@@ -20,6 +20,12 @@ public interface FrameSink {
     /**
      * Write one encoded frame.
      *
+     * <p><b>Contract:</b> implementations must write {@code data} synchronously and must
+     * <em>not retain the array</em> after returning — producers reuse the buffer across
+     * frames to avoid per-frame allocation at 30 fps (see {@code MjpegProducer},
+     * {@code VideoEncoderPipeline}, {@code AudioStream}). A future sink that buffers
+     * asynchronously must copy the bytes first.
+     *
      * @param ptsUs presentation timestamp in microseconds (may be 0 if unknown)
      * @param data  frame payload (JPEG, one NAL access unit, or one AAC frame)
      * @param len   valid length of {@code data}

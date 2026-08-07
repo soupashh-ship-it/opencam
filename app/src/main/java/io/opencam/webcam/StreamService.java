@@ -221,12 +221,27 @@ public class StreamService extends Service implements ControlApi.Host {
         main.post(new Runnable() {
             @Override
             public void run() {
+                // A stop may have raced this queued start (e.g. Start tapped, then the
+                // notification's Stop before doStart ran — stopStreaming() now runs
+                // doStop() inline on the main thread). If the state moved past STARTING,
+                // don't resurrect the pipeline after the user already stopped it.
+                if (state != STATE_STARTING) {
+                    return;
+                }
                 doStart();
             }
         });
     }
 
     public void stopStreaming() {
+        // Teardown mutates shared state and must run on the main thread. When we're
+        // already there (notification Stop, onDestroy, the UI button), run it inline
+        // instead of posting — a queued post can be dropped if the looper is shutting
+        // down, leaving the camera and server open with no way to release them.
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            doStop();
+            return;
+        }
         main.post(new Runnable() {
             @Override
             public void run() {

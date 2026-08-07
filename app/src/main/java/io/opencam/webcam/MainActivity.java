@@ -397,6 +397,12 @@ public class MainActivity extends Activity
 
     @Override
     protected void onDestroy() {
+        // Drop our listener reference before unbinding: the foreground service
+        // outlives this activity, so a stale listener would pin the whole
+        // activity (views, window, context) in memory until the service stops.
+        if (service != null) {
+            service.setListener(null);
+        }
         if (bound) {
             unbindService(connection);
             bound = false;

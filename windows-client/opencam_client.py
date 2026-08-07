@@ -486,13 +486,25 @@ class FramedVideoStream(threading.Thread):
                 self.on_error("could not open %s stream: %s" % (self.fmt.upper(), e))
                 return
             vstream = container.streams.video[0]
+            # Consecutive decode failures are counted so a permanently broken stream
+            # (e.g. the phone restarted mid-packet) fails cleanly instead of spinning
+            # hot on a decode loop that can never produce a frame.
+            stall = 0
             while not self._halt.is_set():
                 try:
                     frame = next(container.decode(vstream))
+                    stall = 0
                 except StopIteration:
                     break
                 except Exception:
-                    # a corrupt access unit shouldn't kill the session — skip it
+                    # a corrupt access unit shouldn't kill the session — skip it,
+                    # but only a few in a row
+                    stall += 1
+                    if stall > 25:
+                        if not self._halt.is_set():
+                            self.on_error("%s stream stalled — the phone may have "
+                                          "restarted" % self.fmt.upper())
+                        break
                     continue
                 try:
                     img = frame.to_image()
@@ -767,6 +779,8 @@ class App:
         self.connected = False
         self.latest = None            # most recent PIL frame
         self.latest_id = 0
+        self._drawn_id = -1           # id of the frame currently on the canvas
+        self._canvas_size = (0, 0)    # last canvas size we drew for (resize forces redraw)
         self.frame_counter = 0
         self.fps = 0.0
         self.fps_last = time.time()
@@ -1461,6 +1475,8 @@ class App:
             self.audio = None
         self.phone = None
         self.latest = None
+        self.latest_id = 0
+        self._drawn_id = -1
         self.canvas.delete("all")
         self.lbl_device.config(text="not connected")
         self.lbl_battery.config(text="")
@@ -1548,7 +1564,10 @@ class App:
 
     def _vcam_start_worker(self):
         if self.phone is None or not self.connected:
-            return  # disconnected while the 800ms auto-start delay was pending
+            # disconnected while the 800ms auto-start delay was pending — put the
+            # button back so it isn't stuck disabled until the next connect
+            self._post_ui(lambda: self.btn_vcam.config(state=tk.NORMAL))
+            return
         try:
             err = virtualcam.prepare()
             if err:
@@ -1620,9 +1639,18 @@ class App:
             self.fps = self.frame_counter / (now - self.fps_last)
             self.frame_counter = 0
             self.fps_last = now
-        # draw the newest frame
-        if self.latest is not None:
-            self._draw(self.latest)
+        # draw the newest frame — but only when there IS a new frame, or the canvas
+        # was resized. Redrawing every 40 ms otherwise rebuilt the PhotoImage and
+        # LANCZOS-resized the same frame ~25 times per second for nothing, stealing
+        # CPU from the decoder and making the preview stutter on slow machines.
+        if self.latest is not None and self.connected:
+            size = (self.canvas.winfo_width(), self.canvas.winfo_height())
+            if size != self._canvas_size:
+                self._canvas_size = size
+                self._drawn_id = -1  # force a redraw of the current frame
+            if self.latest_id != self._drawn_id:
+                self._drawn_id = self.latest_id
+                self._draw(self.latest)
         # refresh battery / camera info every ~10s
         if self.connected and now - self._last_aux >= 10.0:
             self._last_aux = now
