@@ -384,6 +384,8 @@ def write_manual_bats():
 def prepare():
     """Ensure our camera entry exists. Returns None or an error string."""
     if not HAS_PYVCAM:
+        if getattr(sys, "frozen", False):
+            return "virtual camera component is missing — please reinstall OpenCam Client"
         return ("virtual camera needs extra packages — run:\n"
                 "  python -m pip install pyvirtualcam numpy")
     if not bundled() and not filter_registered():

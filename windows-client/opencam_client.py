@@ -1517,9 +1517,9 @@ class App:
         """Start the video reader for the currently selected codec."""
         if self.codec != "jpg" and not HAS_AV:
             _log("H.264/H.265 requested but the 'av' package is missing — falling back to MJPEG")
-            self._post_ui(lambda: self._set_status(
-                "%s streaming needs the 'av' package — using MJPEG instead"
-                % self.codec.upper(), error=True))
+            msg = ("%s decoder component missing — using MJPEG instead" % self.codec.upper()) if getattr(
+                sys, "frozen", False) else ("%s streaming needs the 'av' package — using MJPEG instead" % self.codec.upper())
+            self._post_ui(lambda msg=msg: self._set_status(msg, error=True))
             self.codec = "jpg"
             self._post_ui(lambda: self._set_codec_ui("jpg"))
         if self.codec == "jpg":
