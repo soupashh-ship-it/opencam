@@ -62,23 +62,44 @@ public class AudioStream {
         if (minBuf <= 0) {
             minBuf = sampleRate / 10 * 2 * channels;
         }
-        recorder = new AudioRecord(source, sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2);
-        if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
-            recorder.release();
-            recorder = null;
-            throw new IOException("AudioRecord failed to initialize");
-        }
+        try {
+            recorder = new AudioRecord(source, sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT, minBuf * 2);
+            if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+                recorder.release();
+                recorder = null;
+                throw new IOException("AudioRecord failed to initialize");
+            }
 
-        MediaFormat format = new MediaFormat();
-        format.setString(MediaFormat.KEY_MIME, "audio/mp4a-latm");
-        format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
-        format.setInteger(MediaFormat.KEY_SAMPLE_RATE, sampleRate);
-        format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, channels);
-        format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateKbps * 1000);
-        format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, minBuf);
-        codec = MediaCodec.createEncoderByType("audio/mp4a-latm");
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        codec.start();
+            MediaFormat format = new MediaFormat();
+            format.setString(MediaFormat.KEY_MIME, "audio/mp4a-latm");
+            format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+            format.setInteger(MediaFormat.KEY_SAMPLE_RATE, sampleRate);
+            format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, channels);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateKbps * 1000);
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, minBuf);
+            codec = MediaCodec.createEncoderByType("audio/mp4a-latm");
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            codec.start();
+        } catch (RuntimeException e) {
+            // AudioRecord/MediaCodec throw unchecked exceptions on devices without an
+            // AAC encoder or with a rejected mic config — convert to IOException so
+            // callers treat it as "audio unavailable" instead of crashing.
+            if (recorder != null) {
+                try {
+                    recorder.release();
+                } catch (Exception ignored) {
+                }
+                recorder = null;
+            }
+            if (codec != null) {
+                try {
+                    codec.release();
+                } catch (Exception ignored) {
+                }
+                codec = null;
+            }
+            throw new IOException("audio encoder unavailable", e);
+        }
 
         running = true;
         thread = new Thread(new Runnable() {

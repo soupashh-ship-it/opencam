@@ -65,10 +65,30 @@ public class VideoEncoderPipeline {
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
 
-        codec = MediaCodec.createEncoderByType(mime);
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-        inputSurface = codec.createInputSurface();
-        codec.start();
+        try {
+            codec = MediaCodec.createEncoderByType(mime);
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            inputSurface = codec.createInputSurface();
+            codec.start();
+        } catch (RuntimeException e) {
+            // MediaCodec.createEncoderByType/configure/start throw unchecked
+            // CodecException/IllegalArgumentException when the device lacks the codec
+            // or rejects the config (e.g. H.264 at an unusual size). Callers expect
+            // IOException to mean "encoder unavailable" — convert so they fall back
+            // to jpg instead of crashing.
+            if (codec != null) {
+                try {
+                    codec.release();
+                } catch (Exception ignored) {
+                }
+                codec = null;
+            }
+            if (inputSurface != null) {
+                inputSurface.release();
+                inputSurface = null;
+            }
+            throw new IOException("encoder unavailable: " + mime, e);
+        }
         running = true;
         pump = new Thread(new Runnable() {
             @Override

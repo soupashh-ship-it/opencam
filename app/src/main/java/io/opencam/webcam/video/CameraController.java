@@ -55,6 +55,19 @@ public class CameraController {
     private Surface previewSurface;
     private MjpegProducer mjpeg;
     private Surface encoderSurface;
+    // False in encoded mode: the MJPEG ImageReader is a dormant session target then, and
+    // a full-res YUV/JPEG reader alongside the encoder surface forces the HAL to produce
+    // frames for it every cycle — on most devices that caps the whole session at ~30fps
+    // no matter what fps is requested. Excluding it leaves the encoder surface + preview
+    // alone, which is how the 1080p60 path actually reaches 60.
+    // Written from open()/setStreamOutputs() on the main/HTTP threads, read on the
+    // camera handler thread by createSessionLocked() — must be volatile.
+    private volatile boolean includeMjpegReader = true;
+    // True while createCaptureSession() is in flight — a second call while one is
+    // configuring fails with "session busy" on many HALs. restartSessionLocked()
+    // coalesces into restartQueued instead of issuing a parallel create.
+    private boolean creatingSession;
+    private boolean restartQueued;
     private volatile boolean running;
     private boolean closing;
     private int openAttempts;
@@ -88,7 +101,7 @@ public class CameraController {
     /** Open a camera. Returns immediately; result arrives via {@code listener}. */
     public void open(final String id, int w, int h, int targetFps,
                      Surface preview, MjpegProducer mjpegProducer, Surface enc,
-                     Listener l) {
+                     boolean includeMjpeg, Listener l) {
         this.listener = l;
         this.cameraId = id;
         this.width = w;
@@ -97,6 +110,7 @@ public class CameraController {
         this.previewSurface = preview;
         this.mjpeg = mjpegProducer;
         this.encoderSurface = enc;
+        this.includeMjpegReader = includeMjpeg;
         this.closing = false;
         handler.post(new Runnable() {
             @Override
@@ -117,12 +131,17 @@ public class CameraController {
         });
     }
 
-    /** Called when a client needs the encoded-video surface added/removed. */
-    public void setEncoderSurface(final Surface surface) {
+    /**
+     * Atomically set the encoder surface and whether the MJPEG reader is a session target,
+     * then rebuild the session once. (Ensuring both in one post avoids two session restarts
+     * racing during a codec switch.)
+     */
+    public void setStreamOutputs(final Surface enc, final boolean includeMjpeg) {
         handler.post(new Runnable() {
             @Override
             public void run() {
-                encoderSurface = surface;
+                encoderSurface = enc;
+                includeMjpegReader = includeMjpeg;
                 restartSessionLocked();
             }
         });
@@ -134,7 +153,8 @@ public class CameraController {
      * when reopening an id while the previous close is still in flight.
      */
     public void restart(final String id, int w, int h, int targetFps,
-                        Surface preview, MjpegProducer mjpegProducer, Surface enc) {
+                        Surface preview, MjpegProducer mjpegProducer, Surface enc,
+                        boolean includeMjpeg) {
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -156,6 +176,7 @@ public class CameraController {
                 previewSurface = preview;
                 mjpeg = mjpegProducer;
                 encoderSurface = enc;
+                includeMjpegReader = includeMjpeg;
                 closing = false;
                 openLocked(id);
             }
@@ -533,7 +554,7 @@ public class CameraController {
             if (previewSurface != null && previewSurface.isValid()) {
                 targets.add(previewSurface);
             }
-            if (mjpeg != null && mjpeg.reader.getSurface().isValid()) {
+            if (includeMjpegReader && mjpeg != null && mjpeg.reader.getSurface().isValid()) {
                 targets.add(mjpeg.reader.getSurface());
             }
             if (encoderSurface != null && encoderSurface.isValid()) {
@@ -552,16 +573,20 @@ public class CameraController {
             for (Surface s : targets) {
                 builder.addTarget(s);
             }
+            creatingSession = true;
             camera.createCaptureSession(targets, sessionCallback, handler);
         } catch (CameraAccessException e) {
+            creatingSession = false;
             Logs.e("create session failed", e);
             fail("Failed to start camera session");
         } catch (IllegalStateException e) {
             // e.g. session busy / device closed while configuring — never crash on it.
+            creatingSession = false;
             Logs.e("create session failed", e);
             fail("Failed to start camera session");
         } catch (IllegalArgumentException e) {
             // e.g. a surface was abandoned between the isValid() check and the call.
+            creatingSession = false;
             Logs.e("create session failed", e);
             fail("Failed to start camera session");
         }
@@ -570,11 +595,19 @@ public class CameraController {
     private final CameraCaptureSession.StateCallback sessionCallback = new CameraCaptureSession.StateCallback() {
         @Override
         public void onConfigured(CameraCaptureSession s) {
+            creatingSession = false;
             if (camera == null || closing) {
                 return;
             }
             session = s;
             reopening = false;
+            if (restartQueued) {
+                // A surface-set change arrived while this session was configuring —
+                // rebuild immediately with the current targets.
+                restartQueued = false;
+                restartSessionLocked();
+                return;
+            }
             applyLocked();
             running = true;
             if (listener != null) {
@@ -584,6 +617,8 @@ public class CameraController {
 
         @Override
         public void onConfigureFailed(CameraCaptureSession s) {
+            creatingSession = false;
+            restartQueued = false;
             fail("Camera session configuration failed");
         }
 
@@ -599,6 +634,13 @@ public class CameraController {
     /** Recreate the capture session (used when the surface set changes). */
     private void restartSessionLocked() {
         if (camera == null) {
+            return;
+        }
+        if (creatingSession) {
+            // A createCaptureSession is already in flight — queue the rebuild instead
+            // of issuing a parallel one (many HALs reject with "session busy"). The
+            // in-flight session's onConfigured/onClosed will drain the queue.
+            restartQueued = true;
             return;
         }
         if (session != null) {

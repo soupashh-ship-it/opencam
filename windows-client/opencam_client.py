@@ -874,7 +874,7 @@ class App:
             self.entry_port.delete(0, tk.END)
             self.entry_port.insert(0, str(cfg["port"]))
 
-        self.root.after(40, self._tick)
+        self.root.after(16, self._tick)  # ~60Hz poll; _tick only redraws on new frames
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(1200, self._vcam_hint)
         if cfg["autoConnect"] and cfg["host"]:
@@ -1808,7 +1808,7 @@ class App:
         if self.connected and now - self._last_aux >= 10.0:
             self._last_aux = now
             self._refresh_aux()
-        self.root.after(40, self._tick)
+        self.root.after(16, self._tick)  # ~60Hz poll; no-op when no new frame arrived
 
     def _draw(self, img):
         cw = self.canvas.winfo_width()

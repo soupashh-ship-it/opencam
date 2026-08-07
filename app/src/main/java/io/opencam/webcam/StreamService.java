@@ -401,8 +401,16 @@ public class StreamService extends Service implements ControlApi.Host {
                         codec.equals("hevc") ? VideoEncoderPipeline.HEVC : VideoEncoderPipeline.AVC);
                 encoderSurface = pipeline.start(width, height, fps, bitrate);
                 usingEncoder = true;
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
+                // MediaCodec throws unchecked CodecException/IllegalArgumentException on
+                // devices without the codec or with an invalid config — never crash the
+                // app over a missing H.264 encoder; fall back to universally-working jpg.
                 Logs.e("encoder start failed, falling back to jpg", e);
+                if (pipeline != null) {
+                    pipeline.stop();
+                    pipeline = null;
+                }
+                encoderSurface = null;
                 usingEncoder = false;
             }
         } else {
@@ -411,7 +419,8 @@ public class StreamService extends Service implements ControlApi.Host {
         mjpeg = createJpegProducer();
         camera = new CameraController(this);
         camera.open(cameraIds[cameraIndex], width, height, fps,
-                previewSurface, mjpeg, usingEncoder ? encoderSurface : null, cameraListener);
+                previewSurface, mjpeg, usingEncoder ? encoderSurface : null,
+                !usingEncoder, cameraListener);
     }
 
     private void closePipeline() {
@@ -480,7 +489,8 @@ public class StreamService extends Service implements ControlApi.Host {
             // implementation closed on one thread and opened on a brand-new thread,
             // racing the in-flight close and producing Camera error 2 (MAX_CAMERAS_IN_USE).
             camera.restart(cameraIds[cameraIndex], width, height, fps,
-                    previewSurface, mjpeg, usingEncoder ? encoderSurface : null);
+                    previewSurface, mjpeg, usingEncoder ? encoderSurface : null,
+                    !usingEncoder);
         } else {
             openCameraPipeline();
         }
@@ -757,9 +767,16 @@ public class StreamService extends Service implements ControlApi.Host {
             sink.open(socket);
             audioSink = sink;
             ensureAudio();
-            audio.attachSink(micMuted ? null : sink);
             if (audio != null) {
+                // ensureAudio() can fail silently on devices without an AAC encoder;
+                // don't attach a client to a null stream (or crash on it).
+                audio.attachSink(micMuted ? null : sink);
                 audio.lastWriteMs = System.currentTimeMillis();
+            } else {
+                // No audio stream available — close the socket so it doesn't leak (the
+                // watchdog can't reclaim it: reclaimIdleClients guards on audio != null).
+                audioSink = null;
+                sink.close();
             }
             Logs.i("audio client connected");
             return true;
@@ -968,23 +985,41 @@ public class StreamService extends Service implements ControlApi.Host {
                     pipeline = new VideoEncoderPipeline(
                             codec.equals("hevc") ? VideoEncoderPipeline.HEVC : VideoEncoderPipeline.AVC);
                     encoderSurface = pipeline.start(width, height, fps, Prefs.bitrateKbps(this));
-                } catch (IOException e) {
+                } catch (IOException | RuntimeException e) {
                     Logs.e("encoder switch failed", e);
+                    if (pipeline != null) {
+                        pipeline.stop();
+                        pipeline = null;
+                    }
+                    encoderSurface = null;
                     return;
                 }
             }
             usingEncoder = true;
             if (camera != null) {
-                camera.setEncoderSurface(encoderSurface);
+                // Encoded mode: drop the MJPEG reader from the session so the HAL only
+                // fills the encoder surface + preview (that's what unlocks 60fps).
+                camera.setStreamOutputs(encoderSurface, false);
             }
         } else {
             usingEncoder = false;
             if (camera != null) {
-                camera.setEncoderSurface(null);
+                // MJPEG mode: bring the reader surface back into the session.
+                camera.setStreamOutputs(null, true);
             }
-            if (pipeline != null) {
-                pipeline.stop();
-                pipeline = null;
+            // Stop the encoder only AFTER the camera session has swapped away from its
+            // input surface — releasing the surface while the old session (or an in-flight
+            // createCaptureSession) still references it fails the session on some HALs.
+            final VideoEncoderPipeline doomed = pipeline;
+            pipeline = null;
+            encoderSurface = null;
+            if (doomed != null) {
+                main.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        doomed.stop();
+                    }
+                }, 500);
             }
         }
     }
@@ -995,8 +1030,11 @@ public class StreamService extends Service implements ControlApi.Host {
                     Prefs.audioBitrateKbps(this), MediaRecorder.AudioSource.VOICE_COMMUNICATION);
             try {
                 audio.start();
-            } catch (IOException e) {
+            } catch (IOException | RuntimeException e) {
+                // AudioRecord/MediaCodec throw unchecked exceptions on devices without an
+                // AAC encoder or with a rejected mic config — never crash the app over it.
                 Logs.e("audio start failed", e);
+                audio = null;
             }
         }
     }
