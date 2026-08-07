@@ -115,6 +115,7 @@ class MockServer(threading.Thread):
         self.muted = 0
         self.codec = "jpg"
         self.bitrate = 8000
+        self.jpeg_quality = 85
         self._h264_cache = None
 
     def run(self):
@@ -195,7 +196,8 @@ class MockServer(threading.Thread):
                                "codec": self.codec, "bitrate": self.bitrate,
                                "width": 640, "height": 360, "fps": 30,
                                "audio": 1, "audioRate": 44100, "audioChannels": 1,
-                               "audioBitrate": 128, "jpegQuality": 85}).encode()
+                               "audioBitrate": 128,
+                               "jpegQuality": self.jpeg_quality}).encode()
         if path == "/v1/phone/name":
             return b"MockPhone"
         if path == "/v1/phone/battery_info":
@@ -252,6 +254,12 @@ class MockServer(threading.Thread):
         if path.startswith("/v1/phone/bitrate/"):
             try:
                 self.bitrate = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                pass
+            return b""
+        if path.startswith("/v1/phone/jpeg_quality/"):
+            try:
+                self.jpeg_quality = int(path.rsplit("/", 1)[1])
             except ValueError:
                 pass
             return b""

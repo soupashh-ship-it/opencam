@@ -77,6 +77,16 @@ STREAM_MODES = [
     ("H.265 / HEVC", "hevc", "hevc"),
 ]
 BITRATE_CHOICES = [2000, 4000, 6000, 8000, 12000, 16000, 20000]
+DEFAULT_JPEG_QUALITY = 92
+
+# Quality presets: for MJPEG they set the phone's JPEG quality; for H.264/H.265
+# they set the bitrate. Each maps to a value the phone's own settings offer.
+QUALITY_PRESETS = [
+    ("Low", 70, 3000),
+    ("Medium", 80, 6000),
+    ("High", 92, 12000),
+    ("Ultra", 96, 20000),
+]
 
 
 def _log(msg):
@@ -176,6 +186,10 @@ class Phone:
     def set_bitrate(self, kbps):
         """Set the phone's encoded-video bitrate (kbps), applied live if streaming."""
         self.api("/v1/phone/bitrate/%d" % int(kbps), "PUT")
+
+    def set_jpeg_quality(self, quality):
+        """Set the phone's MJPEG JPEG quality (50..100), applied live if streaming."""
+        self.api("/v1/phone/jpeg_quality/%d" % int(quality), "PUT")
 
     def set_camera(self, index):
         self.api("/v1/camera/active/%d" % index, "PUT")
@@ -719,12 +733,15 @@ def load_config():
                 "port": int(cfg.get("port", DEFAULT_PORT)),
                 "codec": cfg.get("codec", "jpg"),
                 "bitrate": int(cfg.get("bitrate", DEFAULT_BITRATE)),
+                "jpegQuality": int(cfg.get("jpegQuality", DEFAULT_JPEG_QUALITY)),
+                "qualityPreset": cfg.get("qualityPreset", "High"),
                 "autoConnect": bool(cfg.get("autoConnect", True)),
                 "autoVcam": bool(cfg.get("autoVcam", True)),
             }
     except Exception:
         return {"host": "", "port": DEFAULT_PORT,
                 "codec": "jpg", "bitrate": DEFAULT_BITRATE,
+                "jpegQuality": DEFAULT_JPEG_QUALITY, "qualityPreset": "High",
                 "autoConnect": True, "autoVcam": True}
 
 
@@ -772,12 +789,15 @@ class App:
 
         self.codec = "jpg"        # active stream codec: jpg | avc | hevc
         self.bitrate = DEFAULT_BITRATE
+        self.jpeg_quality = DEFAULT_JPEG_QUALITY
         self._build_ui()
         cfg = load_config()
         self.codec = cfg["codec"] if cfg["codec"] in ("jpg", "avc", "hevc") else "jpg"
         self.bitrate = cfg["bitrate"]
+        self.jpeg_quality = cfg["jpegQuality"]
         self._set_codec_ui(self.codec)
         self._set_bitrate_ui(self.bitrate)
+        self._set_quality_ui(cfg["qualityPreset"])
         self.var_auto_connect.set(cfg["autoConnect"])
         self.var_auto_vcam.set(cfg["autoVcam"])
         if cfg["host"]:
@@ -913,6 +933,17 @@ class App:
         self.combo_codec.bind("<<ComboboxSelected>>", self._codec_picked)
         self.combo_codec.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
         self.combo_codec.current(0)
+
+        tk.Label(bar, text="Quality:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
+        self.combo_quality = ttk.Combobox(bar, state="readonly", width=8,
+                                          style="Scan.TCombobox",
+                                          values=[p[0] for p in QUALITY_PRESETS]
+                                                 + ["Custom"],
+                                          font=("Segoe UI", 9))
+        self.combo_quality.bind("<<ComboboxSelected>>", self._quality_picked)
+        self.combo_quality.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
+        self.combo_quality.current(2)  # High
 
         tk.Label(bar, text="Bitrate:", bg=BG, fg=MUTED,
                  font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
@@ -1149,12 +1180,33 @@ class App:
         if self.connected:
             self._apply_stream_mode("codec")
 
+    def _quality_picked(self, _evt=None):
+        preset = self.combo_quality.get()
+        _log("quality preset selected: %s" % preset)
+        if preset == "Custom":
+            self._persist_stream_settings()
+            if self.connected:
+                self._apply_stream_mode("quality")
+            return
+        # Apply the preset to the current codec's quality knob.
+        for name, jq, bps in QUALITY_PRESETS:
+            if name == preset:
+                self.jpeg_quality = jq
+                self.bitrate = bps
+                self._set_bitrate_ui(self.bitrate)
+                break
+        self._persist_stream_settings()
+        if self.connected:
+            self._apply_stream_mode("quality")
+
     def _bitrate_picked(self, _evt=None):
         try:
             self.bitrate = int(self.combo_bitrate.get())
         except (ValueError, tk.TclError):
             self.bitrate = DEFAULT_BITRATE
         _log("bitrate selected: %d kbps" % self.bitrate)
+        # A manual bitrate is a custom choice, not one of the presets.
+        self._set_quality_ui("Custom")
         self._persist_stream_settings()
         if self.connected and self.codec != "jpg":
             self._apply_stream_mode("bitrate")
@@ -1173,14 +1225,23 @@ class App:
         else:
             self.combo_bitrate.current(2)
 
+    def _set_quality_ui(self, preset):
+        vals = [p[0] for p in QUALITY_PRESETS] + ["Custom"]
+        if preset in vals:
+            self.combo_quality.current(vals.index(preset))
+        else:
+            self.combo_quality.current(2)
+
     def _persist_stream_settings(self):
         cfg = load_config()
         cfg["codec"] = self.codec
         cfg["bitrate"] = self.bitrate
+        cfg["jpegQuality"] = self.jpeg_quality
+        cfg["qualityPreset"] = self.combo_quality.get() or "Custom"
         save_config(cfg)
 
     def _apply_stream_mode(self, changed):
-        """Push the new codec/bitrate to the phone and restart the video stream."""
+        """Push the new codec/quality settings to the phone and restart the stream."""
         phone = self.phone
         if not phone:
             return
@@ -1188,13 +1249,16 @@ class App:
 
         def job():
             try:
-                # Always sync the codec pref too: the phone's restart after a
-                # bitrate change rebuilds its pipeline from the saved codec, so a
-                # mismatched pref would drop the encoded stream entirely.
+                # Always sync the codec pref too: the phone's restart rebuilds its
+                # pipeline from the saved codec, so a mismatched pref would either
+                # drop the encoded stream or spin up an encoder during MJPEG.
                 phone.set_codec(self.codec)
-                phone.set_bitrate(self.bitrate)
-                _log("stream mode applied: codec=%s bitrate=%dkbps"
-                     % (self.codec, self.bitrate))
+                if self.codec == "jpg":
+                    phone.set_jpeg_quality(self.jpeg_quality)
+                else:
+                    phone.set_bitrate(self.bitrate)
+                _log("stream mode applied: codec=%s bitrate=%dkbps jpegQuality=%d"
+                     % (self.codec, self.bitrate, self.jpeg_quality))
                 self._post_ui(lambda: self._set_status(
                     "%s changed — reconnecting stream…" % changed))
                 self._post_ui(self._restart_video_only)
@@ -1277,14 +1341,19 @@ class App:
                 if not info:
                     raise ConnectionError("no /v1/phone/info response")
                 self.phone = phone
-                if self.codec != "jpg":
-                    # Push the chosen codec + bitrate so the phone's encoder runs
-                    # with the client's settings (its saved defaults may differ).
-                    try:
-                        phone.set_codec(self.codec)
+                # Push the chosen quality settings so the phone's encoder/producer
+                # runs with the client's values (its saved defaults may differ).
+                try:
+                    # Sync the codec pref in BOTH modes: a leftover avc/hevc pref
+                    # would make the phone build an encoder pipeline when a jpg
+                    # quality change triggers its restart, while we stream MJPEG.
+                    phone.set_codec(self.codec)
+                    if self.codec == "jpg":
+                        phone.set_jpeg_quality(self.jpeg_quality)
+                    else:
                         phone.set_bitrate(self.bitrate)
-                    except Exception as e:
-                        _log("sync stream settings failed (continuing): %s" % e)
+                except Exception as e:
+                    _log("sync stream settings failed (continuing): %s" % e)
                 # start video first so the UI has frames as soon as possible
                 self._start_streams()
                 self._post_ui(lambda host=host, port=port, info=info:
@@ -1339,9 +1408,16 @@ class App:
     def _update_device_label(self, info):
         """Refresh the header label from a /v1/phone/info response."""
         name = info.get("name") or ""
-        self.lbl_device.config(text="%s  ·  %d×%d @%d fps  ·  %s"
+        codec = info.get("codec", "?")
+        if codec == "jpg":
+            quality = info.get("jpegQuality", 0) or 0
+            quality_txt = "quality %d%%" % quality
+        else:
+            quality = info.get("bitrate", 0) or 0
+            quality_txt = "%d kbps" % quality
+        self.lbl_device.config(text="%s  ·  %d×%d @%d fps  ·  %s  ·  %s"
                                 % (name, info.get("width", 0), info.get("height", 0),
-                                   info.get("fps", 0), info.get("codec", "?")))
+                                   info.get("fps", 0), codec.upper(), quality_txt))
 
     def _connected(self, host, port, info):
         self.connected = True
@@ -1350,6 +1426,8 @@ class App:
         self._update_device_label(info)
         save_config({"host": host, "port": int(port),
                      "codec": self.codec, "bitrate": self.bitrate,
+                     "jpegQuality": self.jpeg_quality,
+                     "qualityPreset": self.combo_quality.get() or "Custom",
                      "autoConnect": self.var_auto_connect.get(),
                      "autoVcam": self.var_auto_vcam.get()})
         self._set_status("connected")
@@ -1686,15 +1764,19 @@ def run_selftest():
     assert any(f["ip"] == "127.0.0.1" and f["name"] == "MockPhone" for f in found), found
     print("[ok] network scan finds the mock phone -> %s" % found)
 
-    # stream-mode settings sync: codec + bitrate endpoints respond 200
+    # stream-mode settings sync: codec + bitrate + jpeg quality endpoints respond 200
     st, _ = phone.api("/v1/phone/codec/avc", "PUT")
     assert st == 200, st
     st, _ = phone.api("/v1/phone/bitrate/12000", "PUT")
     assert st == 200, st
+    st, _ = phone.api("/v1/phone/jpeg_quality/96", "PUT")
+    assert st == 200, st
     info2 = phone.ping()
     assert info2.get("codec") == "avc" and info2.get("bitrate") == 12000, info2
-    print("[ok] /v1/phone/codec + /v1/phone/bitrate sync (codec=%s bitrate=%d)"
-          % (info2.get("codec"), info2.get("bitrate")))
+    assert info2.get("jpegQuality") == 96, info2
+    print("[ok] /v1/phone/codec + /v1/phone/bitrate + /v1/phone/jpeg_quality sync"
+          " (codec=%s bitrate=%d jpegQuality=%d)"
+          % (info2.get("codec"), info2.get("bitrate"), info2.get("jpegQuality")))
 
     # framed H.264: the mock encodes real Annex-B with PyAV; the client must
     # decode it into frames via FramedVideoStream (same path as live streaming)

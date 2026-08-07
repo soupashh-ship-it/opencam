@@ -518,6 +518,7 @@ public class StreamService extends Service implements ControlApi.Host {
                 + ",\"audioChannels\":1"
                 + ",\"audioBitrate\":" + Prefs.audioBitrateKbps(this)
                 + ",\"jpegQuality\":" + Prefs.jpegQuality(this)
+                + ",\"bitrate\":" + Prefs.bitrateKbps(this)
                 + "}";
     }
 
@@ -746,6 +747,18 @@ public class StreamService extends Service implements ControlApi.Host {
         // applies immediately (the still-connected framed client is re-attached to
         // the fresh encoder, and its decoder re-syncs on the replayed SPS/PPS).
         if (state == STATE_RUNNING && usingEncoder) {
+            onRestart();
+        }
+    }
+
+    @Override
+    public void setPhoneJpegQuality(int quality) {
+        int v = Math.max(50, Math.min(100, quality));
+        Prefs.putInt(this, Prefs.JPEG_QUALITY, v);
+        Logs.i("phone jpeg quality set to " + v + " by client");
+        // Restart only the MJPEG path — the JPEG producer reads the quality at
+        // creation, so a restart applies it live. Encoded streams don't use it.
+        if (state == STATE_RUNNING && !usingEncoder) {
             onRestart();
         }
     }

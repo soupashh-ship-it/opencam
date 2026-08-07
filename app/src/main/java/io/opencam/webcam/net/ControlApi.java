@@ -74,6 +74,9 @@ public final class ControlApi {
 
         /** Change the phone's encoded-video bitrate (kbps), applied live. */
         void setPhoneBitrate(int kbps);
+
+        /** Change the phone's MJPEG JPEG quality (50..100), applied live. */
+        void setPhoneJpegQuality(int quality);
     }
 
     private static final Pattern WxH = Pattern.compile("(\\d+)x(\\d+)");
@@ -177,6 +180,16 @@ public final class ControlApi {
             int kbps = intPathParam(path, "/v1/phone/bitrate/");
             if (kbps > 0) {
                 host.setPhoneBitrate(kbps);
+            }
+            HttpResponse.sendText(socket, "");
+            return true;
+        }
+        if (path.startsWith("/v1/phone/jpeg_quality/")) {
+            // MJPEG quality (50..100) — the desktop client's quality control for
+            // the classic stream, where bitrate is meaningless.
+            int q = intPathParam(path, "/v1/phone/jpeg_quality/");
+            if (q > 0) {
+                host.setPhoneJpegQuality(q);
             }
             HttpResponse.sendText(socket, "");
             return true;

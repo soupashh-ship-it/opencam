@@ -11,7 +11,7 @@ app.
 |---|---|
 | Live video preview | `GET /video` (MJPEG) **or** `GET /v5/video/avc` (H.264) **or** `GET /v5/video/hevc` (H.265) — pick the codec in the top bar |
 | Microphone audio | `GET /v2/audio` (AAC), played through ffplay |
-| Codec + bitrate sync | The client pushes its codec/bitrate choice to the phone (`/v1/phone/codec`, `/v1/phone/bitrate`) so both sides match — H.264/H.265 quality is driven by the **bitrate** selector |
+| Codec + quality sync | The client pushes its codec/quality choice to the phone (`/v1/phone/codec`, `/v1/phone/bitrate`, `/v1/phone/jpeg_quality`) so both sides match — quality is driven by the **Quality** preset or the **Bitrate**/JPEG quality selector |
 | Switch camera / torch / mute | `PUT /v1/camera/*` |
 | Zoom, exposure (EV), white balance sliders | `PUT /v3|camera/zoom`, `/v3/camera/ev`, `/v2/camera/wb_level` |
 | Auto-focus trigger | `PUT /v1/camera/autofocus` |
@@ -48,20 +48,25 @@ cam** — so it's ready for Discord/Zoom as soon as it opens. Both behaviours ca
 toggled with the *Auto-connect* and *Virtual cam on connect* checkboxes in the top
 bar (persisted per machine).
 
-### Choosing the video codec & bitrate
+### Choosing the video codec & quality
 
-Next to the port field there are two dropdowns:
+Next to the port field there are three dropdowns:
 
-* **Codec** — `MJPEG` (max compatibility; quality = the phone's JPEG quality
-  setting) or `H.264` / `H.265 / HEVC` (much better quality-per-bit; the phone
-  hardware-encodes and the client decodes with bundled FFmpeg).
-* **Bitrate** (only used by H.264/H.265) — from 2000 to 20000 kbps. Higher =
-  sharper, at the cost of more bandwidth. The client sends its choice to the
-  phone (`/v1/phone/bitrate`), so the encoder really runs at the bitrate you
-  pick — unlike MJPEG where bitrate does nothing.
+* **Codec** — `MJPEG` (max compatibility) or `H.264` / `H.265 / HEVC` (much
+  better quality-per-bit; the phone hardware-encodes and the client decodes
+  with bundled FFmpeg).
+* **Quality** — quick presets that map onto the right knob for the selected
+  codec: `Low` / `Medium` / `High` / `Ultra`. For H.264/H.265 they set the
+  **bitrate** (3000 → 20000 kbps); for MJPEG they set the phone's **JPEG
+  quality** (70 → 96%). Picking `Custom` hands control to the exact selectors.
+* **Bitrate** (H.264/H.265 only) — 2000–20000 kbps, sent to the phone via
+  `/v1/phone/bitrate`, so the encoder really runs at the bitrate you pick.
+  For MJPEG the phone's JPEG quality is pushed via `/v1/phone/jpeg_quality`
+  instead — that's the control that actually affects MJPEG sharpness.
 
-Changing either while connected re-syncs the phone and reconnects the stream
-automatically. Your choices are remembered for next launch.
+Changing any of these while connected re-syncs the phone and reconnects the
+stream automatically. Your choices are remembered for next launch, and the
+header shows the live codec + bitrate/quality the phone reports back.
 
 > **Tip:** H.264 @ 8–12 Mbps looks dramatically better than MJPEG on the same
 > network, especially at 1080p and above, and uses less bandwidth to boot.
