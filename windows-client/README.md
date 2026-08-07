@@ -16,7 +16,7 @@ app.
 | Zoom, exposure (EV), white balance sliders | `PUT /v3|camera/zoom`, `/v3/camera/ev`, `/v2/camera/wb_level` |
 | Auto-focus trigger | `PUT /v1/camera/autofocus` |
 | Battery + device info | `GET /v1/phone/*` |
-| Expose as a Windows webcam | DirectShow virtual camera via pyvirtualcam — "OpenCam Virtual Camera" appears in Discord, Zoom, WhatsApp, Meet |
+| Expose as a Windows webcam | DirectShow virtual camera via pyvirtualcam — "OpenCam Virtual Camera" appears in Discord, OBS, Zoom, Meet, browsers (⚠ not WhatsApp — see below) |
 
 The sliders only appear for the features your phone's camera advertises
 (via `/v1/camera/info`), so a cheap camera with no zoom just won't show a zoom
@@ -77,12 +77,12 @@ The desktop app is a viewer/controller. To bring the camera *into* OBS directly,
 add a **Media Source** with the URL `http://<phone-ip>:4747/video` — OpenCam
 speaks plain MJPEG, which OBS, VLC and browsers all accept.
 
-### Using it as a webcam anywhere (Discord, Zoom, WhatsApp, Meet)
+### Using it as a webcam anywhere (Discord, OBS, Zoom, Meet)
 
 Click **Virtual cam** in the controls row. OpenCam registers an
 **"OpenCam Virtual Camera"** DirectShow device (one-time admin prompt) and,
 while it's ON, the phone stream is exposed as a real Windows camera that
-Discord, Zoom, WhatsApp Desktop, Google Meet and any other app can pick — right
+Discord, OBS, Zoom, Google Meet, browsers and most desktop apps can pick — right
 next to "OBS Virtual Camera" and "DroidCam Video". OBS's own entry is never
 touched: OpenCam adds its own device alongside it instead of renaming anything.
 
@@ -93,6 +93,16 @@ touched: OpenCam adds its own device alongside it instead of renaming anything.
   is closed, and apps see a black/standby frame until you stream.
 * Toggling the button off (or disconnecting) stops feeding frames and closes
   the camera; "OBS Virtual Camera" stays intact the whole time.
+
+> **⚠ WhatsApp (and other UWP/MSIX store apps) will NOT list this camera** — and
+> they don't list "OBS Virtual Camera" either. Windows has two camera
+> enumerations: DirectShow (used by Discord, OBS, browsers, Zoom, Teams) lists
+> every software camera; the UWP/Media-Foundation path used by Store-packaged
+> apps like WhatsApp only surfaces **kernel-streaming (driver) cameras**.
+> DroidCam appears there only because it installs a kernel driver. Fixing this
+> for OpenCam means shipping a virtual-camera kernel driver (or a Windows 11
+> "Camera Frame Server" custom source) — a separate, larger project. Everything
+> else already works.
 
 ## Troubleshooting
 

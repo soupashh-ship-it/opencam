@@ -20,6 +20,32 @@ How it works
 Registration happens once (admin/UAC) — afterwards the device persists and the
 client only needs to open it and send frames while streaming. Uninstalling only
 removes our extra entry; OBS Virtual Camera stays untouched.
+
+Why WhatsApp (and other UWP/MSIX apps) don't list it
+-----------------------------------------------------
+Windows has TWO camera enumerations:
+
+* DirectShow (``ICreateDevEnum`` / ``@device_sw_``) — used by Discord, OBS,
+  browsers, Zoom, Teams and ffmpeg. Lists every "Video Input Devices"
+  registration, including ours and OBS Virtual Camera.
+* UWP/Media Foundation (``DeviceClass.VideoCapture`` / ``MFEnumDeviceSources``
+  vidcap) — used by Store-packaged apps like WhatsApp Desktop. On modern
+  Windows this enumeration only surfaces **kernel-streaming (KS) cameras**
+  (physical webcams and driver-backed virtual cameras like DroidCam's, which
+  installs a ``ROOT\MEDIA`` kernel driver). DirectShow-only software devices are
+  not listed — this is why neither "OpenCam Virtual Camera" nor "OBS Virtual
+  Camera" appears in WhatsApp's camera picker while DroidCam's does.
+
+A registry-only DirectShow registration cannot appear in that list. Making the
+camera visible to WhatsApp requires one of:
+
+* a kernel-streaming virtual camera driver (what DroidCam ships), or
+* a Windows 11 "Camera Frame Server" custom source (``IMFCameraFrameServerCustomSource``).
+
+Until then the OpenCam camera works in every DirectShow-based app (Discord,
+OBS, Chrome/Edge/Meet, Zoom, Teams, ffmpeg, VLC). This module mirrors the
+reference OBS registration exactly (including the ``FilterData`` pin/media-type
+blob) so our entry is byte-identical to OBS's everywhere OBS works.
 """
 
 import base64
@@ -204,14 +230,37 @@ foreach ($h in $hives) {
   New-Item -Path $h -Force | Out-Null
   reg add $h /v CLSID /t REG_SZ /d "%(clsid)s" /f | Out-Null
   reg add $h /v FriendlyName /t REG_SZ /d "%(name)s" /f | Out-Null
+  # Mirror the FilterData blob from the filter's own OBS-installer registration
+  # (same CLSID, same pins, same media types) so our instance is byte-identical
+  # to the reference OBS Virtual Camera entry. FilterData carries the serialized
+  # pin/media-type data DirectShow's device enumerator uses for matching.
+  # (.Replace is a literal swap - no regex escaping pitfalls on GUID paths.)
+  $src = $h.Replace('%(instance)s', '%(obsclsid)s')
+  $fd = (Get-ItemProperty -Path $src -ErrorAction SilentlyContinue).FilterData
+  if ($fd) { Set-ItemProperty -Path $h -Name FilterData -Value $fd -Type Binary }
 }
 Set-Content -Path "%(result)s" -Value "REGISTERED %(name)s"
 """ % {
         "dll64": dll64, "dll32": dll32, "syswow": syswow,
         "cat": VIDEO_INPUT_CATEGORY, "clsid": FILTER_CLSID,
-        "instance": INSTANCE_GUID, "name": DEVICE_NAME,
+        "instance": INSTANCE_GUID, "obsclsid": FILTER_CLSID,
+        "name": DEVICE_NAME,
         "result": os.path.join(d, "reg_result.txt"),
     }
+
+
+def _instance_has_filterdata():
+    """True if our device instance carries the FilterData blob (OBS parity)."""
+    if winreg is None:
+        return False
+    for hive, base in _REG_HIVES:
+        try:
+            with winreg.OpenKey(hive, _instance_key(hive, base)) as k:
+                winreg.QueryValueEx(k, "FilterData")
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def register():
@@ -237,7 +286,12 @@ def register():
         if filter_registered() and device_name() == DEVICE_NAME:
             break
         time.sleep(0.25)
-    return filter_registered() and device_name() == DEVICE_NAME
+    ok = filter_registered() and device_name() == DEVICE_NAME
+    # FilterData is optional (the device works without it in DirectShow apps),
+    # but if the mirror silently failed, say so instead of promising parity.
+    if ok and not _instance_has_filterdata():
+        print("note: FilterData mirror did not land (device still registered)")
+    return ok
 
 
 def unregister():
@@ -296,6 +350,9 @@ reg add "HKLM\\SOFTWARE\\Classes\\CLSID\\%CAT%\\Instance\\%INST%" /v CLSID /t RE
 reg add "HKLM\\SOFTWARE\\Classes\\CLSID\\%CAT%\\Instance\\%INST%" /v FriendlyName /t REG_SZ /d "%DEVICE_NAME%" /f >nul
 reg add "HKLM\\SOFTWARE\\WOW6432Node\\Classes\\CLSID\\%CAT%\\Instance\\%INST%" /v CLSID /t REG_SZ /d "%FILTER%" /f >nul
 reg add "HKLM\\SOFTWARE\\WOW6432Node\\Classes\\CLSID\\%CAT%\\Instance\\%INST%" /v FriendlyName /t REG_SZ /d "%DEVICE_NAME%" /f >nul
+rem Mirror the FilterData blob from the filter's own OBS registration so our
+rem instance matches the reference entry byte-for-byte (pin/media-type data).
+powershell -NoProfile -Command "$s='HKLM:\SOFTWARE\Classes\CLSID\%CAT%\Instance\%FILTER%'; $d='HKLM:\SOFTWARE\Classes\CLSID\%CAT%\Instance\%INST%'; $fd=(Get-ItemProperty -Path $s -ErrorAction SilentlyContinue).FilterData; if($fd){Set-ItemProperty -Path $d -Name FilterData -Value $fd -Type Binary}; $s='HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID\%CAT%\Instance\%FILTER%'; $d='HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID\%CAT%\Instance\%INST%'; $fd=(Get-ItemProperty -Path $s -ErrorAction SilentlyContinue).FilterData; if($fd){Set-ItemProperty -Path $d -Name FilterData -Value $fd -Type Binary}"
 echo done.
 exit /b 0
 """.replace("%DEVICE_NAME%", DEVICE_NAME)
