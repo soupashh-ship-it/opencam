@@ -3,6 +3,7 @@ package io.opencam.webcam.video;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
+import android.os.Build;
 import android.view.Surface;
 
 import io.opencam.webcam.net.FrameSink;
@@ -64,10 +65,55 @@ public class VideoEncoderPipeline {
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        // Low-latency streaming profile. By default many SoC H.264 encoders
+        // buffer several frames for rate control and use B-frames, which adds
+        // 100ms-1s of end-to-end delay (exactly the lag users see in Discord).
+        // CBR + realtime priority + zero B-frames + the low-latency flag keep
+        // the encoder streaming with the freshest frame.
+        boolean latencyKeys = true;
+        if (Build.VERSION.SDK_INT >= 21) {
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE,
+                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            // KEY_PRIORITY_REALTIME == 256 (not exposed as a constant in this
+            // SDK jar, so use the documented value).
+            format.setInteger(MediaFormat.KEY_PRIORITY, 256);
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
+            format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0);
+        }
 
         try {
             codec = MediaCodec.createEncoderByType(mime);
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            try {
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            } catch (RuntimeException e1) {
+                // Some encoders reject the low-latency keys (KEY_MAX_B_FRAMES /
+                // KEY_LOW_LATENCY / CBR are hints, not promises). Retry with the
+                // plain baseline config so H.264 still works on those devices
+                // instead of falling all the way back to jpg. A failed
+                // configure() can leave the codec in an undefined state on some
+                // HALs, so the retry uses a FRESH codec instance.
+                Logs.i("encoder rejected latency keys — retrying baseline (" + mime + ")");
+                try {
+                    codec.release();
+                } catch (Exception ignored) {
+                }
+                codec = null;
+                codec = MediaCodec.createEncoderByType(mime);
+                MediaFormat plain = new MediaFormat();
+                plain.setString(MediaFormat.KEY_MIME, mime);
+                plain.setInteger(MediaFormat.KEY_WIDTH, width);
+                plain.setInteger(MediaFormat.KEY_HEIGHT, height);
+                plain.setInteger(MediaFormat.KEY_BIT_RATE, bitrateKbps * 1000);
+                plain.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
+                plain.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
+                plain.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                codec.configure(plain, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            }
             inputSurface = codec.createInputSurface();
             codec.start();
         } catch (RuntimeException e) {

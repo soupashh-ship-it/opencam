@@ -633,7 +633,16 @@ class MfVcam:
                 # BILINEAR: re-scaling every frame with LANCZOS is needlessly slow
                 # (30fps x 1080p); BILINEAR is a fraction of the cost at the same
                 # visual quality for a virtual camera feed.
-                rgb = img.convert("RGB").resize((FRAME_W, FRAME_H), Image.BILINEAR)
+                #
+                # Fast path: when the phone frame is already the target size,
+                # skip the resize entirely (a 1920x1080 stream is the common
+                # case). convert("RGB") is also skipped when the mode is right.
+                if img.size == (FRAME_W, FRAME_H) and img.mode == "RGB":
+                    rgb = img
+                else:
+                    rgb = img.convert("RGB")
+                    if rgb.size != (FRAME_W, FRAME_H):
+                        rgb = rgb.resize((FRAME_W, FRAME_H), Image.BILINEAR)
                 r, g, b = rgb.split()
                 bgra = Image.merge("RGBA",
                                    (b, g, r, Image.new("L", rgb.size, 255)))

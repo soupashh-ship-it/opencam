@@ -543,10 +543,15 @@ class FramedVideoStream(threading.Thread):
                 except StopIteration:
                     break
                 except Exception:
-                    # a corrupt access unit shouldn't kill the session — skip it,
-                    # but only a few in a row
+                    # A corrupt access unit shouldn't kill the session — skip it,
+                    # but only a few in a row. NB: when the reader drops stale
+                    # packets (latency bound) a whole P-frame chain is skipped and
+                    # the decoder errors until the next IDR keyframe (the phone
+                    # emits one every 2s). The 2s of keyframes ≈ up to 120 frames
+                    # at 60fps, so the cap must comfortably exceed one IDR period
+                    # or a deliberate drop would look like a dead stream.
                     stall += 1
-                    if stall > 25:
+                    if stall > 150:
                         if not self._halt.is_set():
                             self.on_error("%s stream stalled — the phone may have "
                                           "restarted" % self.fmt.upper())
@@ -568,7 +573,15 @@ class FramedVideoStream(threading.Thread):
                 self.on_error("video stream error: %s" % e)
 
     def _read_loop(self):
-        """Read [pts i64][len i32][payload] packets and queue the payload bytes."""
+        """Read [pts i64][len i32][payload] packets and queue the payload bytes.
+
+        The queue is BOUNDED: if the decoder ever falls behind (a GC pause, a
+        slow to_image(), a brief WiFi hiccup), stale packets are dropped instead
+        of piling up. An unbounded queue would make end-to-end latency grow
+        without limit — the phone keeps producing frames at 30-60fps and the
+        decoder would always be processing frames from seconds ago. We only ever
+        need the freshest frame, so a small buffer + drop-old is correct.
+        """
         sock = self._sock
         try:
             prefix = getattr(self, "_prefix", None)
@@ -587,6 +600,12 @@ class FramedVideoStream(threading.Thread):
                     break
                 if self._halt.is_set():
                     break
+                # keep the queue small — drop old packets if the decoder lags
+                while self._q.qsize() >= 4:
+                    try:
+                        self._q.get_nowait()
+                    except queue.Empty:
+                        break
                 self._q.put(payload)
         except OSError:
             pass
