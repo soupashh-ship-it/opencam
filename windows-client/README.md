@@ -15,6 +15,7 @@ app.
 | Zoom, exposure (EV), white balance sliders | `PUT /v3|camera/zoom`, `/v3/camera/ev`, `/v2/camera/wb_level` |
 | Auto-focus trigger | `PUT /v1/camera/autofocus` |
 | Battery + device info | `GET /v1/phone/*` |
+| Expose as a Windows webcam | DirectShow virtual camera via pyvirtualcam — "OpenCam Virtual Camera" appears in Discord, Zoom, WhatsApp, Meet |
 
 The sliders only appear for the features your phone's camera advertises
 (via `/v1/camera/info`), so a cheap camera with no zoom just won't show a zoom
@@ -28,6 +29,8 @@ slider.
   `python -m pip install pillow`
 * **ffmpeg/ffplay** (optional, for audio only) — <https://ffmpeg.org/download.html>
   or `winget install Gyan.FFmpeg`
+* **pyvirtualcam + numpy** (optional, only for the *Virtual cam* feature) —
+  `python -m pip install pyvirtualcam numpy`
 
 ## Usage
 
@@ -43,6 +46,23 @@ The last IP/port is remembered for next time (`opencam_client.json`).
 The desktop app is a viewer/controller. To bring the camera *into* OBS directly,
 add a **Media Source** with the URL `http://<phone-ip>:4747/video` — OpenCam
 speaks plain MJPEG, which OBS, VLC and browsers all accept.
+
+### Using it as a webcam anywhere (Discord, Zoom, WhatsApp, Meet)
+
+Click **Virtual cam** in the controls row. OpenCam registers an
+**"OpenCam Virtual Camera"** DirectShow device (one-time admin prompt) and,
+while it's ON, the phone stream is exposed as a real Windows camera that
+Discord, Zoom, WhatsApp Desktop, Google Meet and any other app can pick — right
+next to "OBS Virtual Camera" and "DroidCam Video". OBS's own entry is never
+touched: OpenCam adds its own device alongside it instead of renaming anything.
+
+* The underlying filter driver is the one OBS Studio ships (free). The client
+  bundles its own copy and falls back to it if OBS isn't installed.
+* First use asks for admin once (UAC) to write the device entry to the
+  registry; after that it just works — the device persists even when the app
+  is closed, and apps see a black/standby frame until you stream.
+* Toggling the button off (or disconnecting) stops feeding frames and closes
+  the camera; "OBS Virtual Camera" stays intact the whole time.
 
 ## Troubleshooting
 

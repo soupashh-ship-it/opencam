@@ -22,4 +22,10 @@ if errorlevel 1 (
     %PY% -m pip install pillow
 )
 
+%PY% -c "import pyvirtualcam, numpy" >nul 2>nul
+if errorlevel 1 (
+    echo Installing pyvirtualcam + numpy ^(needed for the virtual camera^)...
+    %PY% -m pip install pyvirtualcam numpy
+)
+
 %PY% opencam_client.py

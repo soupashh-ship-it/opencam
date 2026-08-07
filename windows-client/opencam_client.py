@@ -43,6 +43,8 @@ except ImportError:
     Image = ImageTk = None
     HAS_PIL = False
 
+import virtualcam
+
 # Where settings live. When frozen into an .exe, __file__ points inside
 # PyInstaller's temp extraction dir (wiped on exit) — prefer the exe's folder so
 # the config stays portable. If that folder isn't writable (e.g. Program Files),
@@ -515,6 +517,8 @@ class App:
         self.controls_built = False
         self._last_aux = 0.0
         self._debounce = {}
+        self.vcam = None              # virtualcam.VirtualCam while streaming to it
+        self.vcam_active = False
 
         # Cross-thread plumbing: tkinter must only be touched on the main thread.
         # Threads push lambdas onto _ui_q (drained in _tick); control calls run on
@@ -532,6 +536,20 @@ class App:
 
         self.root.after(40, self._tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.after(1200, self._vcam_hint)
+
+    def _vcam_hint(self):
+        """Quiet first-run hint so users know the camera can be exposed to apps."""
+        try:
+            if virtualcam.filter_registered():
+                if virtualcam.device_name() != virtualcam.DEVICE_NAME:
+                    self._set_status("tip: enable 'Virtual cam' to expose it as '%s'"
+                                     % virtualcam.DEVICE_NAME)
+            else:
+                self._set_status("tip: enable 'Virtual cam' after connecting to appear "
+                                 "in Discord/WhatsApp (one-time admin)")
+        except Exception:
+            pass
 
     # ---- cross-thread helpers --------------------------------------------------
     def _post_ui(self, fn):
@@ -650,6 +668,7 @@ class App:
         self._add_button(row1, "Torch", self._cmd_torch)
         self.btn_mute = self._add_button(row1, "Mute mic", self._cmd_mute)
         self.btn_af = self._add_button(row1, "Auto-focus", self._cmd_af)
+        self.btn_vcam = self._add_button(row1, "Virtual cam", self._cmd_vcam)
 
         self.row2 = tk.Frame(ctrl, bg=BG)
         self.row2.pack(fill=tk.X, pady=(8, 0))
@@ -885,6 +904,7 @@ class App:
                 self.root.after_cancel(self._debounce.pop(k))
             except Exception:
                 pass
+        self._vcam_stop()
         if self.video:
             self.video.stop()
             self.video = None
@@ -953,11 +973,63 @@ class App:
         if phone:
             self._run_control(phone.autofocus)
 
+    # ---- virtual camera ------------------------------------------------------
+    def _cmd_vcam(self):
+        if self.vcam_active:
+            self._vcam_stop()
+            self._set_status("virtual camera off")
+            return
+        if not self.phone:
+            return
+        self.btn_vcam.config(state=tk.DISABLED)
+        self._set_status("starting virtual camera…")
+        threading.Thread(target=self._vcam_start_worker, daemon=True).start()
+
+    def _vcam_start_worker(self):
+        try:
+            err = virtualcam.prepare()
+            if err:
+                self._post_ui(lambda e=err: self._vcam_fail(e))
+                return
+            info = self.phone.info
+            w, h, fps = 1280, 720, 30
+            iw, ih = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
+            if 320 <= iw <= 1920 and 320 <= ih <= 1920:
+                w, h = iw, ih
+            fps = max(1, min(60, int(info.get("fps", 30) or 30)))
+            vc = virtualcam.VirtualCam(w, h, fps)
+            vc.start()
+            self.vcam = vc
+            self._post_ui(lambda w=w, h=h: self._vcam_on(w, h))
+        except Exception as e:
+            self._post_ui(lambda e=e: self._vcam_fail(str(e)))
+
+    def _vcam_on(self, w, h):
+        self.vcam_active = True
+        self.btn_vcam.config(state=tk.NORMAL, text="Virtual cam: ON")
+        self._set_status("virtual camera on — '%s' is now available in apps"
+                         % virtualcam.DEVICE_NAME)
+
+    def _vcam_fail(self, err):
+        self.btn_vcam.config(state=tk.NORMAL)
+        self._set_status("virtual camera: %s" % err, error=True)
+
+    def _vcam_stop(self):
+        self.vcam_active = False
+        if self.vcam is not None:
+            self.vcam.stop()
+            self.vcam = None
+        if hasattr(self, "btn_vcam"):
+            self.btn_vcam.config(state=tk.NORMAL, text="Virtual cam")
+
     # ---- stream callbacks (called from reader threads) -------------------------
     def _on_frame(self, img):
         self.frame_counter += 1
         self.latest = img
         self.latest_id += 1
+        # feed the registered virtual camera (best effort, non-blocking)
+        if self.vcam_active and self.vcam is not None:
+            self.vcam.send(img)
 
     def _on_stream_error(self, msg):
         self._post_ui(lambda: self._set_status(msg, error=True))
@@ -1120,6 +1192,13 @@ def run_selftest():
     assert any(f["ip"] == "127.0.0.1" and f["name"] == "MockPhone" for f in found), found
     print("[ok] network scan finds the mock phone -> %s" % found)
 
+    # virtual camera module: detection helpers must load and run headless
+    import virtualcam
+    assert hasattr(virtualcam, "VirtualCam") and callable(virtualcam.prepare)
+    assert virtualcam.DEVICE_NAME == "OpenCam Virtual Camera"
+    print("[ok] virtual camera module loads (filter registered: %s)"
+          % virtualcam.filter_registered())
+
     # audio framing: the mock sends 3 fake framed packets; the client's
     # AudioStream parser is exercised by the mock server's /v2/audio endpoint
     print("[ok] audio module loads (AudioStream defined)")
@@ -1134,6 +1213,11 @@ def run_selftest():
 # ============================================================================
 
 def main():
+    if "--register-vcam" in sys.argv:
+        ok = virtualcam.register()
+        print("OpenCam Virtual Camera registered." if ok
+              else "registration failed or declined.")
+        return 0 if ok else 1
     if "--selftest" in sys.argv:
         if not HAS_PIL:
             print("Pillow is required for the self-test: python -m pip install pillow")

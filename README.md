@@ -117,6 +117,13 @@ python opencam_client.py          # GUI
 
 - **Scan** button — auto-discovers OpenCam phones on your LAN (subnet probe of port 4747,
   dependency-free; pick a phone from the dropdown to connect).
+- **Virtual cam** button — exposes the phone stream as a real Windows camera
+  (**"OpenCam Virtual Camera"**), selectable in Discord, Zoom, WhatsApp, Google Meet and any
+  app that lists webcams — the same mechanism DroidCam Client uses. One-time admin
+  registration (a UAC prompt) installs a bundled DirectShow filter (see
+  [`windows-client/vcam/`](windows-client/vcam/)); after that, toggling **Virtual cam** while
+  connected feeds the phone's frames to the device. Add `--register-vcam` to install it from
+  the command line, or use the `register_vcam.bat` / `unregister_vcam.bat` helpers.
 - Double-click `run_client.bat` for a one-click source launch (installs Pillow if needed).
 - `build_exe.bat` builds a standalone `dist/OpenCamClient.exe` (PyInstaller, no Python
   required on the target machine; the build runs the self-test before shipping).
