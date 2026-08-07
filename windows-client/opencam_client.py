@@ -791,7 +791,7 @@ def load_config():
             return {
                 "host": cfg.get("host", ""),
                 "port": int(cfg.get("port", DEFAULT_PORT)),
-                "codec": cfg.get("codec", "jpg"),
+                "codec": cfg.get("codec", "avc"),
                 "bitrate": int(cfg.get("bitrate", DEFAULT_BITRATE)),
                 "jpegQuality": int(cfg.get("jpegQuality", DEFAULT_JPEG_QUALITY)),
                 "qualityPreset": cfg.get("qualityPreset", "High"),
@@ -800,7 +800,7 @@ def load_config():
             }
     except Exception:
         return {"host": "", "port": DEFAULT_PORT,
-                "codec": "jpg", "bitrate": DEFAULT_BITRATE,
+                "codec": "avc", "bitrate": DEFAULT_BITRATE,
                 "jpegQuality": DEFAULT_JPEG_QUALITY, "qualityPreset": "High",
                 "autoConnect": True, "autoVcam": True}
 
@@ -849,12 +849,16 @@ class App:
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
-        self.codec = "jpg"        # active stream codec: jpg | avc | hevc
+        # H.264 is the default: MJPEG at 1080p is 18-48 MB/s over WiFi (caps at
+        # ~20fps no matter how fast the phone encodes), while H.264 is a few Mbps
+        # and comfortably reaches 30-60fps. Users who need browser/OBS MJPEG can
+        # switch back — the phone handles either.
+        self.codec = "avc"        # active stream codec: jpg | avc | hevc
         self.bitrate = DEFAULT_BITRATE
         self.jpeg_quality = DEFAULT_JPEG_QUALITY
         self._build_ui()
         cfg = load_config()
-        self.codec = cfg["codec"] if cfg["codec"] in ("jpg", "avc", "hevc") else "jpg"
+        self.codec = cfg["codec"] if cfg["codec"] in ("jpg", "avc", "hevc") else "avc"
         self.bitrate = cfg["bitrate"]
         self.jpeg_quality = cfg["jpegQuality"]
         self._set_codec_ui(self.codec)
@@ -1453,12 +1457,12 @@ class App:
     def _start_video_stream(self):
         """Start the video reader for the currently selected codec."""
         if self.codec != "jpg" and not HAS_AV:
-            _log("H.264/H.265 requested but the 'av' package is missing")
+            _log("H.264/H.265 requested but the 'av' package is missing — falling back to MJPEG")
             self._post_ui(lambda: self._set_status(
-                "%s streaming needs the 'av' package — reinstall the client"
+                "%s streaming needs the 'av' package — using MJPEG instead"
                 % self.codec.upper(), error=True))
-            self._post_ui(self._disconnect)
-            return
+            self.codec = "jpg"
+            self._post_ui(lambda: self._set_codec_ui("jpg"))
         if self.codec == "jpg":
             self.video = VideoStream(self.phone.host, self.phone.port,
                                      self._on_frame, self._on_stream_error)
@@ -1817,7 +1821,11 @@ class App:
             scale = 1.0
         nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
         if img.size != (nw, nh):
-            img = img.resize((nw, nh), Image.LANCZOS)
+            # BILINEAR instead of LANCZOS: downscaling 1080p to a preview every
+            # frame with LANCZOS costs 20-40ms on the UI thread and throttles the
+            # displayed fps; BILINEAR is ~5x faster with no visible difference at
+            # preview size. (The vcam feed is resized separately, not here.)
+            img = img.resize((nw, nh), Image.BILINEAR)
         self.photo = ImageTk.PhotoImage(img)
         self.canvas.delete("all")
         self.canvas.create_image(cw // 2, ch // 2, image=self.photo)

@@ -37,10 +37,18 @@ public abstract class MjpegProducer {
     private final Handler encodeHandler;
 
     protected MjpegProducer(int width, int height, int quality, int imageFormat) {
+        this(width, height, quality, imageFormat,
+                // ImageReader for JPEG is limited to 1 in-flight image on many devices
+                // (larger values throw IllegalArgumentException); YUV can hold 4 so a
+                // slower encode never stalls the camera pipeline.
+                imageFormat == ImageFormat.JPEG ? 1 : 4);
+    }
+
+    protected MjpegProducer(int width, int height, int quality, int imageFormat, int maxImages) {
         this.width = width;
         this.height = height;
         this.quality = quality;
-        this.reader = ImageReader.newInstance(width, height, imageFormat, 4);
+        this.reader = ImageReader.newInstance(width, height, imageFormat, maxImages);
         // JPEG encoding (YUV -> NV21 -> compressToJpeg) is moved off the camera handler
         // thread onto its own looper. At 1440p+ a single encode can take 30-80 ms; doing
         // it on the camera thread stalled session reconfigs and capture requests.
@@ -63,6 +71,15 @@ public abstract class MjpegProducer {
     }
 
     protected abstract void onImageAvailable(ImageReader reader);
+
+    /**
+     * Convert one YUV_420_888 image into the NV21 buffer. Implementations may
+     * special-case the plane layout (contiguous rows) for speed; the base class
+     * provides the generic per-pixel fallback.
+     */
+    protected boolean toNv21Impl(Image image, byte[] nv21, int width, int height) {
+        return toNv21Generic(image, nv21, width, height);
+    }
 
     /** Hand a JPEG to the current sink (dropped when no client is attached).
      *  The sink writes synchronously, so the caller's buffer may be reused next frame. */
@@ -117,6 +134,9 @@ public abstract class MjpegProducer {
             // Buffers are reused across frames (this producer runs single-threaded on its
             // dedicated encode thread) to avoid ~1.5 byte-per-pixel allocation churn.
             private byte[] nv21Buf;
+            // scratch for the chroma row-interleave fast path (see toNv21)
+            private byte[] uvRowV;
+            private byte[] uvRowU;
             private final GrowBuf jpegBuf = new GrowBuf(64 * 1024);
 
             @Override
@@ -134,7 +154,7 @@ public abstract class MjpegProducer {
                     if (nv21Buf == null || nv21Buf.length < need) {
                         nv21Buf = new byte[need];
                     }
-                    if (!toNv21(image, nv21Buf, width, height)) {
+                    if (!toNv21Impl(image, nv21Buf, width, height)) {
                         return;
                     }
                     YuvImage yuv = new YuvImage(nv21Buf, ImageFormat.NV21, width, height, null);
@@ -148,6 +168,85 @@ public abstract class MjpegProducer {
                         image.close();
                     }
                 }
+            }
+
+            @Override
+            protected boolean toNv21Impl(Image image, byte[] nv21, int width, int height) {
+                Image.Plane[] planes = image.getPlanes();
+                if (planes.length < 3) {
+                    return false;
+                }
+                ByteBuffer y = planes[0].getBuffer();
+                ByteBuffer u = planes[1].getBuffer();
+                ByteBuffer v = planes[2].getBuffer();
+                int yRowStride = planes[0].getRowStride();
+                int yPixStride = planes[0].getPixelStride();
+                int uvRowStride = planes[1].getRowStride();
+                int uvPixStride = planes[1].getPixelStride();
+
+                // ---- Y plane: bulk copy per row when contiguous (the common case).
+                // The old per-pixel loop did width*height ByteBuffer.get() calls (~2M at
+                // 1080p) with bounds checks each — that alone cost 10-40ms/frame and was
+                // the main reason MJPEG capped at ~20fps on many devices.
+                if (yPixStride == 1) {
+                    int dst = 0;
+                    for (int row = 0; row < height; row++) {
+                        y.position(row * yRowStride);
+                        y.get(nv21, dst, width);   // one native memcpy per row
+                        dst += width;
+                    }
+                } else {
+                    int yi = 0;
+                    for (int row = 0; row < height; row++) {
+                        int rb = row * yRowStride;
+                        for (int col = 0; col < width; col++) {
+                            nv21[yi++] = y.get(rb + col * yPixStride);
+                        }
+                    }
+                }
+
+                // ---- chroma: NV21 wants V,U interleaved per 2x2 block.
+                // Bulk-copy each chroma row into scratch arrays (native memcpy), then
+                // interleave from the arrays — array reads are far cheaper than the
+                // bounds-checked ByteBuffer.get() the old loop used per sample.
+                // NOTE: only copy the halfW*uvPixStride bytes we consume. Some devices
+                // tightly pack the last plane row (buffer size = stride*(rows-1) +
+                // used), so reading the full stride there would overrun the buffer and
+                // drop the frame.
+                int halfW = width / 2;
+                int halfH = height / 2;
+                int copyLen = halfW * uvPixStride;
+                if (uvRowStride > 0 && uvRowStride >= copyLen) {
+                    if (uvRowV == null || uvRowV.length < copyLen) {
+                        uvRowV = new byte[copyLen];
+                        uvRowU = new byte[copyLen];
+                    }
+                    int dst = width * height;
+                    for (int row = 0; row < halfH; row++) {
+                        int rb = row * uvRowStride;
+                        v.position(rb);
+                        v.get(uvRowV, 0, copyLen);
+                        u.position(rb);
+                        u.get(uvRowU, 0, copyLen);
+                        for (int col = 0; col < halfW; col++) {
+                            int idx = col * uvPixStride;
+                            nv21[dst++] = uvRowV[idx];
+                            nv21[dst++] = uvRowU[idx];
+                        }
+                    }
+                } else {
+                    // fallback: fully generic per-sample path (rarely hit)
+                    int dst = width * height;
+                    for (int row = 0; row < halfH; row++) {
+                        int rb = row * uvRowStride;
+                        for (int col = 0; col < halfW; col++) {
+                            int idx = rb + col * uvPixStride;
+                            nv21[dst++] = v.get(idx);
+                            nv21[dst++] = u.get(idx);
+                        }
+                    }
+                }
+                return true;
             }
         };
     }
@@ -193,7 +292,7 @@ public abstract class MjpegProducer {
     }
 
     /** Convert a YUV_420_888 image into the caller-provided NV21 buffer (Y + interleaved VU). */
-    private static boolean toNv21(Image image, byte[] nv21, int width, int height) {
+    private static boolean toNv21Generic(Image image, byte[] nv21, int width, int height) {
         Image.Plane[] planes = image.getPlanes();
         if (planes.length < 3) {
             return false;

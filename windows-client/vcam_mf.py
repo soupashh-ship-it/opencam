@@ -604,7 +604,10 @@ class MfVcam:
             try:
                 # RGB -> BGRA at 1920x1080, all C-level (PIL channel merge).
                 # MFVideoFormat_RGB32 / the NV12 converter expect BGRA byte order.
-                rgb = img.convert("RGB").resize((FRAME_W, FRAME_H), Image.LANCZOS)
+                # BILINEAR: re-scaling every frame with LANCZOS is needlessly slow
+                # (30fps x 1080p); BILINEAR is a fraction of the cost at the same
+                # visual quality for a virtual camera feed.
+                rgb = img.convert("RGB").resize((FRAME_W, FRAME_H), Image.BILINEAR)
                 r, g, b = rgb.split()
                 bgra = Image.merge("RGBA",
                                    (b, g, r, Image.new("L", rgb.size, 255)))

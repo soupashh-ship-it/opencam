@@ -94,6 +94,11 @@ public class StreamService extends Service implements ControlApi.Host {
     private int cameraIndex;
     private boolean micMuted;
     private boolean torchOn;
+    // True while the MJPEG producer uses the ISP direct-JPEG ImageReader (see
+    // createJpegProducer). A session failure on such a device triggers a one-shot
+    // fallback to the YUV path instead of failing the whole stream.
+    private volatile boolean jpegDirectPath;
+    private boolean jpegFallbackDone;
     // Written on the main thread, read from HTTP handler threads (setPhoneBitrate,
     // videoBusy) — must be volatile like pipeline.sink.
     private volatile boolean usingEncoder;
@@ -315,6 +320,8 @@ public class StreamService extends Service implements ControlApi.Host {
     }
 
     private void doStop() {
+        jpegFallbackDone = false;
+        jpegDirectPath = false;
         detachSinks();
         if (server != null) {
             server.shutdown();
@@ -401,7 +408,7 @@ public class StreamService extends Service implements ControlApi.Host {
         } else {
             usingEncoder = false;
         }
-        mjpeg = MjpegProducer.yuv(width, height, Prefs.jpegQuality(this));
+        mjpeg = createJpegProducer();
         camera = new CameraController(this);
         camera.open(cameraIds[cameraIndex], width, height, fps,
                 previewSurface, mjpeg, usingEncoder ? encoderSurface : null, cameraListener);
@@ -422,6 +429,49 @@ public class StreamService extends Service implements ControlApi.Host {
         }
         usingEncoder = false;
         encoderSurface = null;
+    }
+
+    /**
+     * Build the JPEG producer for MJPEG mode.
+     *
+     * <p>Preferred: a JPEG {@link ImageReader} so the camera ISP produces JPEG bytes
+     * directly — zero YUV→NV21→libjpeg conversion, which is what lets MJPEG reach
+     * 30-60fps at 1080p+ instead of ~20fps. The camera's JPEG output size list is
+     * checked first; a minority of devices reject JPEG in repeating requests, so a
+     * capture-session failure while this path is active triggers a one-shot fallback
+     * to the universally-compatible YUV path (see {@link #fallbackJpegPath}).
+     */
+    private MjpegProducer createJpegProducer() {
+        // In encoded mode the mjpeg reader is a dormant session target (nobody watches
+        // it), and a JPEG HAL pipeline alongside the encoder surface trips
+        // ERROR_MAX_IN_FLIGHT on some devices — only try the direct-JPEG path for
+        // pure MJPEG mode.
+        if (!usingEncoder) {
+            try {
+                android.hardware.camera2.CameraCharacteristics cc =
+                        ((android.hardware.camera2.CameraManager) getSystemService(Context.CAMERA_SERVICE))
+                                .getCameraCharacteristics(cameraIds[cameraIndex]);
+                android.hardware.camera2.params.StreamConfigurationMap map =
+                        cc.get(android.hardware.camera2.CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+                if (map != null) {
+                    android.util.Size[] sizes = map.getOutputSizes(android.graphics.ImageFormat.JPEG);
+                    if (sizes != null) {
+                        for (android.util.Size s : sizes) {
+                            if (s.getWidth() == width && s.getHeight() == height) {
+                                Logs.i("MJPEG: using ISP direct-JPEG capture at " + width + "x" + height);
+                                jpegDirectPath = true;
+                                return MjpegProducer.jpegReader(width, height, Prefs.jpegQuality(this));
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                Logs.e("JPEG capability check failed, using YUV", e);
+            }
+        }
+        Logs.i("MJPEG: using YUV capture at " + width + "x" + height);
+        jpegDirectPath = false;
+        return MjpegProducer.yuv(width, height, Prefs.jpegQuality(this));
     }
 
     private void restartCamera() {
@@ -452,6 +502,23 @@ public class StreamService extends Service implements ControlApi.Host {
             main.post(new Runnable() {
                 @Override
                 public void run() {
+                    // A minority of devices reject JPEG in repeating requests — if the
+                    // direct-JPEG path just failed during startup, retry once with the
+                    // universally-compatible YUV producer before giving up.
+                    if ((state == STATE_RUNNING || state == STATE_STARTING)
+                            && jpegDirectPath && !jpegFallbackDone && !usingEncoder) {
+                        jpegFallbackDone = true;
+                        Logs.i("direct-JPEG capture failed (" + message + ") — falling back to YUV");
+                        // keep the still-connected client attached to the new producer
+                        final FrameSink v = videoSink;
+                        openCameraPipeline();
+                        if (v != null && mjpeg != null) {
+                            mjpeg.sink = v;
+                            mjpeg.lastWriteMs = System.currentTimeMillis();
+                            videoSink = v;
+                        }
+                        return;
+                    }
                     // Tear the pipeline down cleanly instead of leaving a half-dead
                     // stream (dead camera, but server + sinks still registered).
                     if (state == STATE_RUNNING || state == STATE_STARTING) {
