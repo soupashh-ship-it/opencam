@@ -997,6 +997,8 @@ class App:
         self.combo_results.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
         self._scan_results = []
         self._scan_port = DEFAULT_PORT
+        self._scan_fallback_used = False
+        self._connect_inflight = False  # true while a connect attempt is running
 
         # stream mode: codec + bitrate (persisted in opencam_client.json)
         tk.Label(bar, text="Codec:", bg=BG, fg=MUTED,
@@ -1223,6 +1225,11 @@ class App:
         self.combo_results["values"] = labels
         self.combo_results.current(0)
         plural = "" if len(found) == 1 else "s"
+        # A single phone on the network is almost certainly the one the user wants —
+        # connect straight away instead of requiring a manual pick from the dropdown.
+        if len(found) == 1 and not self.connected and not self._connect_inflight:
+            self._connect(found[0]["ip"], self._scan_port)
+            return
         self._set_status("found %d phone%s on port %d — pick one to connect"
                          % (len(found), plural, self._scan_port))
 
@@ -1387,10 +1394,15 @@ class App:
             self.entry_port.delete(0, tk.END)
             self.entry_port.insert(0, str(DEFAULT_PORT))
 
+        if self._connect_inflight:
+            _log("connect already in flight — ignoring")
+            return
         _log("connect requested: %s:%d (fallback candidates: %d)"
              % (host, port, len(candidates or [])))
         self._set_status("connecting…")
         self.btn_connect.config(state=tk.DISABLED)
+        self._scan_fallback_used = False
+        self._connect_inflight = True
         threading.Thread(target=self._connect_worker,
                          args=(host, port, list(candidates or [])), daemon=True).start()
 
@@ -1408,6 +1420,7 @@ class App:
 
     def _connect_worker(self, host, port, candidates=None):
         attempts = 1
+        tried = set()
         while True:
             _log("connect attempt %d: %s:%d" % (attempts, host, port))
             try:
@@ -1436,6 +1449,7 @@ class App:
                 return
             except Exception as e:
                 _log("connect to %s:%d failed: %s" % (host, port, e))
+                tried.add("%s:%d" % (host, port))
                 if candidates:
                     nxt = candidates.pop(0)
                     prev = "%s:%d" % (host, port)
@@ -1445,6 +1459,30 @@ class App:
                                   self._set_status("%s unreachable (%s) — trying %s (%d)…"
                                                    % (prev, str(e)[:70], nxt, n)))
                     continue
+                # The saved IP often goes stale (DHCP reassigns the phone), so before
+                # giving up, scan the network and try the phones that are actually
+                # there — pressing Connect should "just work" without a manual pick.
+                if not self._scan_fallback_used:
+                    self._scan_fallback_used = True
+                    self._post_ui(lambda: self._set_status(
+                        "%s:%d unreachable — scanning the network…"
+                        % (host, port)))
+                    try:
+                        found = scan_network(port=port)
+                    except Exception as e2:
+                        _log("fallback scan failed: %s" % e2)
+                        found = []
+                    _log("fallback scan found %d device(s)" % len(found))
+                    untried = [f for f in found
+                               if "%s:%d" % (f["ip"], port) not in tried]
+                    if untried:
+                        host = untried[0]["ip"]
+                        candidates = [x for x in untried[1:]]
+                        attempts += 1
+                        self._post_ui(lambda host=host:
+                                      self._set_status(
+                                          "found %s — connecting…" % host))
+                        continue
                 self._post_ui(lambda e=e: self._connect_failed(str(e)))
                 return
 
@@ -1491,6 +1529,7 @@ class App:
 
     def _connected(self, host, port, info):
         self.connected = True
+        self._connect_inflight = False
         self._reconnect_try = 0
         _log("connected to %s:%d (info: %s)" % (host, port, info))
         self.btn_connect.config(text="Disconnect", state=tk.NORMAL)
@@ -1510,6 +1549,7 @@ class App:
 
     def _connect_failed(self, err):
         _log("connect failed: %s" % err)
+        self._connect_inflight = False
         self.btn_connect.config(state=tk.NORMAL)
         self._set_status("connect failed: %s — is the phone streaming? "
                          "(tap Start Streaming in the OpenCam app, same network)" % err,
@@ -1517,6 +1557,7 @@ class App:
 
     def _disconnect(self):
         self.connected = False
+        self._connect_inflight = False
         self._reconnect_try = 0
         self._reconnect_pending = False
         # cancel any pending debounced slider sends (guarded no-ops anyway)
