@@ -34,3 +34,4 @@ windows-client/_vcam_ref_cpp/packages/
 windows-client/_vcam_ref_cpp/.vs/
 windows-client/_vcam_ref_net/
 windows-client/nuget.exe
+windows-client/opencam_client.log

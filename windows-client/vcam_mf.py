@@ -539,6 +539,14 @@ class MfVcam:
                 break
             time.sleep(0.25)
         if not _camera_live():
+            # never leave the host running without a camera (zombie process +
+            # possible stale device) — kill it before giving up
+            try:
+                if self._proc is not None:
+                    self._proc.kill()
+                    self._proc.wait(timeout=3)
+            except Exception:
+                pass
             self._shm.close()
             self._proc = None
             return "the virtual camera did not come up — check that the " \

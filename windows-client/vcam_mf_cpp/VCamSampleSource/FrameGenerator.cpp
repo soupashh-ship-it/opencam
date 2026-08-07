@@ -114,12 +114,18 @@ HRESULT FrameGenerator::OpenSharedFrame()
 	if (_mapBase)
 		return S_OK;
 
+	// throttle: the buffer may not exist yet (host starts before the feeder
+	// writes); don't hammer with CreateFileW/CreateFileMappingW every frame
+	if (_retryAfter && MFGetSystemTime() < _retryAfter)
+		return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+
 	// file-backed section: coherent across sessions/contexts, no namespaces
 	HANDLE handle = nullptr;
 	BYTE* base = nullptr;
 	HRESULT hr = OcvOpenMapping(&handle, &base, FILE_MAP_READ);
 	if (FAILED(hr))
 	{
+		_retryAfter = MFGetSystemTime() + 250 * 10000; // 250 ms
 		return hr;
 	}
 
@@ -135,7 +141,6 @@ HRESULT FrameGenerator::OpenSharedFrame()
 
 	_mapHandle = handle;
 	_mapBase = base;
-	_lastIndex = -1;
 	WINTRACE(L"FrameGenerator::OpenSharedFrame ok (map handle:%p)", handle);
 	return S_OK;
 }
@@ -166,7 +171,6 @@ const BYTE* FrameGenerator::SharedFramePixels(LONG* stride, UINT* width, UINT* h
 
 	// keep serving the latest frame (a camera re-presents its current frame even
 	// when the client has not produced a new one yet)
-	_lastIndex = idx;
 	if (stride) *stride = hdr->stride;
 	if (width) *width = hdr->width;
 	if (height) *height = hdr->height;
@@ -200,9 +204,11 @@ HRESULT FrameGenerator::Generate(IMFSample* sample, REFGUID format, IMFSample** 
 	LONG srcStride = 0;
 	UINT srcW = 0, srcH = 0;
 	const BYTE* src = nullptr;
+	LONG srcIndex = 0;
 	if (SUCCEEDED(OpenSharedFrame()))
 	{
 		src = SharedFramePixels(&srcStride, &srcW, &srcH);
+		srcIndex = OcvHeader(_mapBase)->frameIndex;
 	}
 
 	if (src && srcW && srcH && srcStride)
@@ -219,20 +225,32 @@ HRESULT FrameGenerator::Generate(IMFSample* sample, REFGUID format, IMFSample** 
 		RETURN_IF_FAILED(buffer2D->Lock2DSize(MF2DBuffer_LockFlags_Write, &scanline, &pitch, &start, &length));
 
 		HRESULT hr = S_OK;
-		if (format == MFVideoFormat_NV12)
+		// torn-frame guard: the writer may bump frameIndex while we copy — if it
+		// did, copy the newer frame once more so we never present a partial row
+		for (int attempt = 0; attempt < 2; attempt++)
 		{
-			hr = RGB32ToNV12(const_cast<BYTE*>(src), (ULONG)(srcW * 4 * srcH), srcStride,
-				srcW, srcH, scanline, length, pitch);
-		}
-		else
-		{
-			// RGB32 media type == BGRA rows; copy row by row (pitch may differ)
-			DWORD bytesPerRow = (DWORD)srcW * 4;
-			for (UINT y = 0; y < srcH; y++)
+			if (format == MFVideoFormat_NV12)
 			{
-				memcpy(scanline + (LONG)y * pitch, src + (LONG)y * srcStride, bytesPerRow);
+				hr = RGB32ToNV12(const_cast<BYTE*>(src), (ULONG)(srcW * 4 * srcH), srcStride,
+					srcW, srcH, scanline, length, pitch);
 			}
-			hr = S_OK;
+			else
+			{
+				// RGB32 media type == BGRA rows; copy row by row (pitch may differ)
+				DWORD bytesPerRow = (DWORD)srcW * 4;
+				for (UINT y = 0; y < srcH; y++)
+				{
+					memcpy(scanline + (LONG)y * pitch, src + (LONG)y * srcStride, bytesPerRow);
+				}
+				hr = S_OK;
+			}
+			// the pointer src is derived from _mapBase, which is stable while open;
+			// re-check the index the writer bumped after our copy started
+			LONG now = OcvHeader(_mapBase)->frameIndex;
+			if (now == srcIndex)
+				break; // frame was stable during the copy
+			// it changed — re-read the (newer) pixels for the second pass
+			src = OcvPixels(_mapBase);
 		}
 
 		buffer2D->Unlock2D();

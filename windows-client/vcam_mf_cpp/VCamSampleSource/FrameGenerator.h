@@ -22,7 +22,7 @@ class FrameGenerator
 	// shared-memory frame source (written by the OpenCam Python client)
 	HANDLE _mapHandle;
 	BYTE* _mapBase;
-	LONG _lastIndex;
+	MFTIME _retryAfter; // don't hammer OpenSharedFrame while the buffer isn't ready
 
 	HRESULT CreateRenderTargetResources(UINT width, UINT height);
 
@@ -35,7 +35,7 @@ public:
 		_deviceHandle(nullptr),
 		_mapHandle(nullptr),
 		_mapBase(nullptr),
-		_lastIndex(-1),
+		_retryAfter(0),
 		_prevTime(MFGetSystemTime())
 	{
 
