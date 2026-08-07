@@ -620,12 +620,17 @@ class MfVcam:
 
     def _feeder(self):
         """Background thread: resize+convert the newest frame and write it."""
+        if sys.platform == "win32":
+            try:
+                ctypes.windll.winmm.timeBeginPeriod(1)
+            except Exception:
+                pass
         while not self._halt.is_set():
             with self._lock:
                 img = self._latest
                 fid = self._latest_id
             if img is None or fid == self._sent_id:
-                time.sleep(0.01)
+                time.sleep(0.001)
                 continue
             try:
                 # RGB -> BGRA at 1920x1080, all C-level (PIL channel merge).
@@ -651,8 +656,8 @@ class MfVcam:
                 self._sent_id = fid
             except Exception as e:
                 _log("feed error: %s" % e)
-                time.sleep(0.1)
-            time.sleep(0.005)
+                time.sleep(0.05)
+            time.sleep(0.001)
 
     # -- stop event ---------------------------------------------------------
 

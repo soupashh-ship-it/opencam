@@ -241,11 +241,11 @@ foreach ($h in $hives) {
 }
 Set-Content -Path "%(result)s" -Value "REGISTERED %(name)s"
 """ % {
-        "dll64": dll64, "dll32": dll32, "syswow": syswow,
+        "dll64": dll64.replace("'", "''"), "dll32": dll32.replace("'", "''"), "syswow": syswow.replace("'", "''"),
         "cat": VIDEO_INPUT_CATEGORY, "clsid": FILTER_CLSID,
         "instance": INSTANCE_GUID, "obsclsid": FILTER_CLSID,
         "name": DEVICE_NAME,
-        "result": os.path.join(d, "reg_result.txt"),
+        "result": os.path.join(d, "reg_result.txt").replace("'", "''"),
     }
 
 

@@ -422,7 +422,16 @@ public final class ControlApi {
 
     private static int intPathParam(String path, String prefix) {
         try {
-            return Integer.parseInt(path.substring(prefix.length()));
+            String val = path.substring(prefix.length());
+            int q = val.indexOf('?');
+            if (q >= 0) {
+                val = val.substring(0, q);
+            }
+            int sl = val.indexOf('/');
+            if (sl >= 0) {
+                val = val.substring(0, sl);
+            }
+            return Integer.parseInt(val.trim());
         } catch (Exception e) {
             return -1;
         }
@@ -430,7 +439,16 @@ public final class ControlApi {
 
     private static float floatPathParam(String path, String prefix) {
         try {
-            return Float.parseFloat(path.substring(prefix.length()));
+            String val = path.substring(prefix.length());
+            int q = val.indexOf('?');
+            if (q >= 0) {
+                val = val.substring(0, q);
+            }
+            int sl = val.indexOf('/');
+            if (sl >= 0) {
+                val = val.substring(0, sl);
+            }
+            return Float.parseFloat(val.trim());
         } catch (Exception e) {
             return 0f;
         }

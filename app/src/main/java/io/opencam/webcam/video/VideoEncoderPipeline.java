@@ -220,8 +220,8 @@ public class VideoEncoderPipeline {
                 if (outBuf == null || outBuf.length < size) {
                     outBuf = new byte[size];
                 }
-                buffer.position(0);
-                buffer.limit(size);
+                buffer.position(info.offset);
+                buffer.limit(info.offset + size);
                 buffer.get(outBuf, 0, size);
             }
             try {

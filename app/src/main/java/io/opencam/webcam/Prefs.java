@@ -23,7 +23,8 @@ public final class Prefs {
     }
 
     private static SharedPreferences sp(Context c) {
-        return PreferenceManager.getDefaultSharedPreferences(c.getApplicationContext());
+        Context app = c.getApplicationContext();
+        return app.getSharedPreferences(app.getPackageName() + "_preferences", Context.MODE_PRIVATE);
     }
 
     public static int port(Context c) {

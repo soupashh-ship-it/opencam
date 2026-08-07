@@ -36,6 +36,13 @@ import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tkinter import ttk
 
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
+
 try:
     from PIL import Image, ImageTk
     HAS_PIL = True
@@ -478,7 +485,7 @@ class FramedVideoStream(threading.Thread):
         self.on_error = on_error
         self._halt = threading.Event()
         self._sock = None
-        self._q = queue.Queue()     # Annex-B bytes, consumed by the demuxer feed
+        self._q = queue.Queue(maxsize=128)     # Annex-B bytes, consumed by the demuxer feed
 
     def stop(self):
         self._halt.set()
@@ -544,12 +551,7 @@ class FramedVideoStream(threading.Thread):
                     break
                 except Exception:
                     # A corrupt access unit shouldn't kill the session — skip it,
-                    # but only a few in a row. NB: when the reader drops stale
-                    # packets (latency bound) a whole P-frame chain is skipped and
-                    # the decoder errors until the next IDR keyframe (the phone
-                    # emits one every 2s). The 2s of keyframes ≈ up to 120 frames
-                    # at 60fps, so the cap must comfortably exceed one IDR period
-                    # or a deliberate drop would look like a dead stream.
+                    # but only a few in a row.
                     stall += 1
                     if stall > 150:
                         if not self._halt.is_set():
@@ -573,15 +575,7 @@ class FramedVideoStream(threading.Thread):
                 self.on_error("video stream error: %s" % e)
 
     def _read_loop(self):
-        """Read [pts i64][len i32][payload] packets and queue the payload bytes.
-
-        The queue is BOUNDED: if the decoder ever falls behind (a GC pause, a
-        slow to_image(), a brief WiFi hiccup), stale packets are dropped instead
-        of piling up. An unbounded queue would make end-to-end latency grow
-        without limit — the phone keeps producing frames at 30-60fps and the
-        decoder would always be processing frames from seconds ago. We only ever
-        need the freshest frame, so a small buffer + drop-old is correct.
-        """
+        """Read [pts i64][len i32][payload] packets and queue the payload bytes."""
         sock = self._sock
         try:
             prefix = getattr(self, "_prefix", None)
@@ -600,12 +594,11 @@ class FramedVideoStream(threading.Thread):
                     break
                 if self._halt.is_set():
                     break
-                # keep the queue small — drop old packets if the decoder lags
-                while self._q.qsize() >= 4:
+                if self._q.full():
                     try:
                         self._q.get_nowait()
                     except queue.Empty:
-                        break
+                        pass
                 self._q.put(payload)
         except OSError:
             pass
@@ -736,8 +729,12 @@ class AudioStream(threading.Thread):
                 if payload is None:
                     break
                 adts = adts_header(length, self.sample_rate, self.channels)
-                if self._proc.stdin:
-                    self._proc.stdin.write(adts + payload)
+                if self._proc and self._proc.stdin:
+                    try:
+                        self._proc.stdin.write(adts + payload)
+                        self._proc.stdin.flush()
+                    except (BrokenPipeError, OSError):
+                        break
         except (ConnectionError, OSError):
             pass
         except Exception:
@@ -1641,13 +1638,16 @@ class App:
 
     def _cmd_camera(self):
         phone = self.phone
-        if not phone or not self.cameras:
+        if not phone:
             return
 
         def job():
+            cams = self.cameras or phone.camera_list()
+            if not cams:
+                return
             cur = phone.camera_info()
             active = cur.get("active", 0)
-            nxt = (active + 1) % len(self.cameras)
+            nxt = (active + 1) % len(cams)
             phone.set_camera(nxt)
             self._post_ui(lambda: self._set_status("switched to camera %d" % nxt))
         self._run_control(job)

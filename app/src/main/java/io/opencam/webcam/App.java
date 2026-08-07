@@ -9,11 +9,13 @@ import android.os.Looper;
 public class App extends Application {
 
     private static App instance;
+    private static Handler mainHandler;
 
     @Override
     public void onCreate() {
         super.onCreate();
         instance = this;
+        mainHandler = new Handler(Looper.getMainLooper());
     }
 
     public static App get() {
@@ -25,6 +27,9 @@ public class App extends Application {
     }
 
     public static Handler mainHandler() {
-        return new Handler(Looper.getMainLooper());
+        if (mainHandler == null) {
+            mainHandler = new Handler(Looper.getMainLooper());
+        }
+        return mainHandler;
     }
 }

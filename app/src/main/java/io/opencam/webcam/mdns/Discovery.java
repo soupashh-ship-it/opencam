@@ -25,19 +25,23 @@ public class Discovery {
             @Override
             public void onServiceRegistered(NsdServiceInfo serviceInfo) {
                 Logs.i("mDNS registered: " + serviceInfo.getServiceName());
+                registered = true;
             }
 
             @Override
             public void onServiceUnregistered(NsdServiceInfo serviceInfo) {
+                registered = false;
             }
 
             @Override
             public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
                 Logs.e("mDNS registration failed: " + errorCode);
+                registered = false;
             }
 
             @Override
             public void onUnregistrationFailed(NsdServiceInfo serviceInfo, int errorCode) {
+                registered = false;
             }
         };
     }

@@ -184,8 +184,8 @@ public class AudioStream {
                         if (aac.length < size) {
                             aac = new byte[size];
                         }
-                        output.position(0);
-                        output.limit(size);
+                        output.position(info.offset);
+                        output.limit(info.offset + size);
                         output.get(aac, 0, size);
                     }
                     codec.releaseOutputBuffer(outIdx, false);

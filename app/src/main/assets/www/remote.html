@@ -61,11 +61,17 @@ function put(url) {
 }
 function msg(t) { document.getElementById('msg').textContent = t; }
 
+let activeCam = 0;
+let camCount = 2;
+
 document.getElementById('btn-stop').onclick = () => put('/v1/stop').then(() => location.reload());
 document.getElementById('btn-restart').onclick = () => put('/v1/restart');
 document.getElementById('btn-torch').onclick = () => put('/v1/camera/torch_toggle');
 document.getElementById('btn-mic').onclick = () => put('/v1/camera/mic_toggle');
-document.getElementById('btn-cam').onclick = () => put('/v1/camera/active/1').catch(() => msg('only one camera'));
+document.getElementById('btn-cam').onclick = () => {
+  let nextCam = (activeCam + 1) % camCount;
+  put('/v1/camera/active/' + nextCam).then(() => { activeCam = nextCam; });
+};
 
 document.getElementById('zoom').addEventListener('change', e =>
   put('/v3/camera/zoom/' + e.target.value));
@@ -73,13 +79,23 @@ document.getElementById('zoom').addEventListener('change', e =>
 document.getElementById('wb').addEventListener('change', e =>
   put('/v1/camera/wb_mode/' + e.target.value));
 
-function refreshBattery() {
+function refreshInfo() {
   fetch('/v1/phone/battery_info').then(r => r.json()).then(j => {
     document.getElementById('battery').textContent = 'Battery ' + j.level + '%';
   }).catch(() => {});
+  fetch('/v1/camera/info').then(r => r.json()).then(j => {
+    activeCam = j.active || 0;
+    if (j.zmMax && j.zmMax > 1) {
+      document.getElementById('zoom').max = j.zmMax;
+    }
+  }).catch(() => {});
+  fetch('/v1/camera/camera_list').then(r => r.text()).then(t => {
+    let lines = t.trim().split('\n').filter(Boolean);
+    if (lines.length > 0) camCount = lines.length;
+  }).catch(() => {});
 }
-setInterval(refreshBattery, 15000);
-refreshBattery();
+setInterval(refreshInfo, 10000);
+refreshInfo();
 </script>
 </body>
 </html>

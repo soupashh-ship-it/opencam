@@ -87,7 +87,7 @@ public final class MjpegSink implements FrameSink {
         // toString() + getBytes() trio for every frame at 30 fps).
         out.write(PART_PREFIX);
         int n = writeLen(len, lenDigits);
-        out.write(lenDigits, 0, n);
+        out.write(lenDigits, lenDigits.length - n, n);
         out.write(PART_END);
         out.write(data, 0, len);
         out.write(CRLF);

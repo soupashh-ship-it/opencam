@@ -87,6 +87,10 @@ public final class HttpResponse {
 
     /** Serve a file from assets/www using chunked transfer encoding. */
     public static void sendAsset(Context context, Socket socket, String assetPath) throws IOException {
+        if (assetPath.contains("..") || assetPath.contains("//")) {
+            sendError(socket, "403 Forbidden");
+            return;
+        }
         InputStream in = null;
         try {
             in = context.getAssets().open("www/" + assetPath);

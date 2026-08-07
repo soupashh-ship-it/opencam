@@ -744,7 +744,7 @@ public class CameraController {
                 default: break;
             }
             int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES);
-            if (modes != null && Arrays.binarySearch(modes, mode) < 0) {
+            if (modes != null && !containsMode(modes, mode)) {
                 mode = CaptureRequest.CONTROL_AWB_MODE_AUTO;
             }
             builder.set(CaptureRequest.CONTROL_AWB_MODE, mode);
@@ -780,7 +780,7 @@ public class CameraController {
             default: mode = CaptureRequest.CONTROL_AF_MODE_AUTO; break;
         }
         int[] modes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
-        if (modes != null && Arrays.binarySearch(modes, mode) < 0) {
+        if (modes != null && !containsMode(modes, mode)) {
             mode = CaptureRequest.CONTROL_AF_MODE_AUTO;
         }
         builder.set(CaptureRequest.CONTROL_AF_MODE, mode);
@@ -807,26 +807,27 @@ public class CameraController {
             }
         }
         Range<Integer> best = null;
-        int bestDist = Integer.MAX_VALUE;
+        int maxLower = -1;
+        int minUpperDelta = Integer.MAX_VALUE;
         for (Range<Integer> r : ranges) {
             int upper = r.getUpper();
-            if (upper < target) {
-                continue; // only ranges that can at least reach the target fps
-            }
-            int dist = upper - target;
-            if (dist < bestDist) {
-                best = r;
-                bestDist = dist;
+            int lower = r.getLower();
+            if (upper >= target) {
+                int upperDelta = upper - target;
+                if (upperDelta < minUpperDelta || (upperDelta == minUpperDelta && lower > maxLower)) {
+                    best = r;
+                    minUpperDelta = upperDelta;
+                    maxLower = lower;
+                }
             }
         }
-        if (best == null) {
-            // nothing reaches the target (e.g. target 60 but max range is 30) —
-            // take the highest available so we still get the best the sensor can do.
-            best = ranges[0];
-            for (Range<Integer> r : ranges) {
-                if (r.getUpper() > best.getUpper()) {
-                    best = r;
-                }
+        if (best != null) {
+            return best;
+        }
+        best = ranges[0];
+        for (Range<Integer> r : ranges) {
+            if (r.getUpper() > best.getUpper() || (r.getUpper() == best.getUpper() && r.getLower() > best.getLower())) {
+                best = r;
             }
         }
         return best;
@@ -851,6 +852,18 @@ public class CameraController {
                 }
             }
         });
+    }
+
+    private static boolean containsMode(int[] modes, int target) {
+        if (modes == null) {
+            return false;
+        }
+        for (int m : modes) {
+            if (m == target) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static float clamp(float v, float lo, float hi) {

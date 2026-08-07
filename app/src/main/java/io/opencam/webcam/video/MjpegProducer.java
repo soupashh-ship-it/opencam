@@ -189,11 +189,16 @@ public abstract class MjpegProducer {
                 // 1080p) with bounds checks each — that alone cost 10-40ms/frame and was
                 // the main reason MJPEG capped at ~20fps on many devices.
                 if (yPixStride == 1) {
-                    int dst = 0;
-                    for (int row = 0; row < height; row++) {
-                        y.position(row * yRowStride);
-                        y.get(nv21, dst, width);   // one native memcpy per row
-                        dst += width;
+                    if (yRowStride == width) {
+                        y.position(0);
+                        y.get(nv21, 0, width * height);
+                    } else {
+                        int dst = 0;
+                        for (int row = 0; row < height; row++) {
+                            y.position(row * yRowStride);
+                            y.get(nv21, dst, width);   // one native memcpy per row
+                            dst += width;
+                        }
                     }
                 } else {
                     int yi = 0;

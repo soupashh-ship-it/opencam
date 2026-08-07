@@ -1222,6 +1222,13 @@ public class StreamService extends Service implements ControlApi.Host {
                 .setContentIntent(pi)
                 .addAction(0, getString(R.string.notification_stop), stopPi)
                 .build();
-        startForeground(1, n);
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(1, n,
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                            | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                            | android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+        } else {
+            startForeground(1, n);
+        }
     }
 }
