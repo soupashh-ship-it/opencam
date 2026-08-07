@@ -36,6 +36,10 @@ public class MainActivity extends Activity
     private Button btnStream;
     private Button btnCamera;
     private Button btnTorch;
+    private View statusDot;
+    private View placeholder;
+    private TextView badgeLive;
+    private ImageButton btnCopy;
 
     private StreamService service;
     private boolean bound;
@@ -78,6 +82,12 @@ public class MainActivity extends Activity
         btnCamera = findViewById(R.id.btn_camera);
         btnTorch = findViewById(R.id.btn_torch);
         ImageButton btnSettings = findViewById(R.id.btn_settings);
+        statusDot = findViewById(R.id.status_dot);
+        placeholder = findViewById(R.id.preview_placeholder);
+        badgeLive = findViewById(R.id.badge_live);
+        btnCopy = findViewById(R.id.btn_copy);
+        // idle dot color until the first state callback arrives after bind
+        setStatusDot(getResources().getColor(R.color.status_idle));
 
         preview.getHolder().addCallback(this);
 
@@ -91,6 +101,13 @@ public class MainActivity extends Activity
             @Override
             public void onClick(View v) {
                 startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+            }
+        });
+
+        btnCopy.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                copyAddress();
             }
         });
 
@@ -122,19 +139,7 @@ public class MainActivity extends Activity
         View.OnLongClickListener copyUrl = new View.OnLongClickListener() {
             @Override
             public boolean onLongClick(View v) {
-                TextView tv = (TextView) v;
-                String text = tv.getText().toString();
-                int scheme = text.indexOf("http://");
-                if (scheme >= 0) {
-                    // The OBS hint label has a prefix ("OBS → Media Source → ")
-                    // — copy only the URL itself, not the label text.
-                    String url = text.substring(scheme);
-                    ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-                    cm.setPrimaryClip(ClipData.newPlainText("OpenCam URL", url));
-                    Toast.makeText(MainActivity.this, R.string.url_copied, Toast.LENGTH_SHORT).show();
-                    return true;
-                }
-                return false;
+                return copyAddress();
             }
         };
         address.setOnLongClickListener(copyUrl);
@@ -146,10 +151,54 @@ public class MainActivity extends Activity
                 if (service != null) {
                     torchOn = !torchOn;
                     service.setTorchOn(torchOn);
-                    btnTorch.setAlpha(torchOn ? 1f : 0.55f);
+                    updateTorchUi();
                 }
             }
         });
+
+        // initial (off) styling for the torch card
+        updateTorchUi();
+    }
+
+    /**
+     * Copy just the streaming URL (without any label prefix) to the clipboard.
+     *
+     * @return true when an address was copied.
+     */
+    private boolean copyAddress() {
+        String text = address.getText().toString();
+        int scheme = text.indexOf("http://");
+        if (scheme < 0) {
+            return false;
+        }
+        String url = text.substring(scheme);
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        cm.setPrimaryClip(ClipData.newPlainText("OpenCam URL", url));
+        Toast.makeText(MainActivity.this, R.string.url_copied, Toast.LENGTH_SHORT).show();
+        return true;
+    }
+
+    /** Reflect the torch state in its control card (accent border + tint when on). */
+    private void updateTorchUi() {
+        btnTorch.setBackgroundResource(torchOn ? R.drawable.bg_btn_active : R.drawable.bg_btn_secondary);
+        // Compound-drawable tint list (not setTint on the drawable): the framework
+        // re-applies the XML drawableTint on every state change, which would wipe a
+        // plain setTint() as soon as the button is pressed/released.
+        btnTorch.setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(
+                getResources().getColor(torchOn ? R.color.accent : R.color.text_secondary)));
+    }
+
+    /** Color the status-pill dot for the current stream state. */
+    private void setStatusDot(int color) {
+        if (statusDot != null && statusDot.getBackground() != null) {
+            statusDot.getBackground().setTint(color);
+        }
+    }
+
+    /** Swap the main CTA between the accent Start pill and the danger Stop pill. */
+    private void setStreamButton(boolean streaming) {
+        btnStream.setBackgroundResource(streaming ? R.drawable.bg_btn_stop : R.drawable.bg_btn_primary);
+        btnStream.setTextColor(streaming ? 0xFFFFFFFF : 0xFF001014);
     }
 
     @Override
@@ -171,7 +220,9 @@ public class MainActivity extends Activity
      * Before the service has opened the camera we keep it disabled.
      */
     private void refreshCameraButton() {
-        btnCamera.setEnabled(service != null && service.getCameraCount() > 1);
+        boolean usable = service != null && service.getCameraCount() > 1;
+        btnCamera.setEnabled(usable);
+        btnCamera.setAlpha(usable ? 1f : 0.45f);
     }
 
     /**
@@ -262,22 +313,37 @@ public class MainActivity extends Activity
             case StreamService.STATE_RUNNING:
                 status.setText(R.string.status_streaming);
                 btnStream.setText(R.string.stop_stream);
+                setStreamButton(true);
+                setStatusDot(getResources().getColor(R.color.success));
+                badgeLive.setVisibility(View.VISIBLE);
+                placeholder.setVisibility(View.GONE);
                 applyMirror();
                 getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 break;
             case StreamService.STATE_STARTING:
                 status.setText(R.string.status_starting);
                 btnStream.setText(R.string.stop_stream);
+                setStreamButton(true);
+                setStatusDot(getResources().getColor(R.color.accent));
+                placeholder.setVisibility(View.GONE);
                 break;
             case StreamService.STATE_ERROR:
                 status.setText(lastError != null && !lastError.isEmpty()
                         ? lastError : getString(R.string.status_error));
                 btnStream.setText(R.string.start_stream);
+                setStreamButton(false);
+                setStatusDot(getResources().getColor(R.color.danger));
+                badgeLive.setVisibility(View.GONE);
+                placeholder.setVisibility(View.VISIBLE);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 break;
             default:
                 status.setText(R.string.status_stopped);
                 btnStream.setText(R.string.start_stream);
+                setStreamButton(false);
+                setStatusDot(getResources().getColor(R.color.status_idle));
+                badgeLive.setVisibility(View.GONE);
+                placeholder.setVisibility(View.VISIBLE);
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 break;
         }

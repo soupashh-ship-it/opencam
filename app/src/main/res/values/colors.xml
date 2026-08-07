@@ -1,8 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="bg_dark">#FF101418</color>
-    <color name="bg_card">#FF1B232B</color>
+    <!-- surfaces -->
+    <color name="bg_dark">#FF0B0F13</color>
+    <color name="bg_surface">#FF10161C</color>
+    <color name="bg_card">#FF161E26</color>
+    <color name="bg_card_elevated">#FF1B2530</color>
+    <color name="bg_preview">#FF090C10</color>
+
+    <!-- strokes -->
+    <color name="stroke">#FF26313C</color>
+    <color name="stroke_soft">#FF1E2831</color>
+
+    <!-- brand -->
     <color name="accent">#FF00C4FF</color>
-    <color name="text_primary">#FFFFFFFF</color>
+    <color name="accent_pressed">#FF00A8D9</color>
+    <color name="accent_tint_bg">#FF0E2933</color>
+    <color name="accent_soft">#2600C4FF</color>
+
+    <!-- semantic -->
+    <color name="success">#FF34D399</color>
+    <color name="danger">#FFF87171</color>
+    <color name="danger_pressed">#FFE05555</color>
+    <color name="status_idle">#FF6B7785</color>
+
+    <!-- text -->
+    <color name="text_primary">#FFF2F6FA</color>
     <color name="text_secondary">#FF9AA7B4</color>
+    <color name="text_tertiary">#FF5F6B78</color>
 </resources>

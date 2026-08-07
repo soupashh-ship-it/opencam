@@ -16,6 +16,16 @@
     <string name="notification_stop">Stop</string>
     <string name="url_copied">URL copied to clipboard</string>
 
+    <string name="address_label">STREAM ADDRESS</string>
+    <string name="copy_address">Copy stream address</string>
+    <string name="live_badge">LIVE</string>
+    <string name="preview_placeholder">Start streaming to see the live preview</string>
+
+    <string name="section_streaming">Streaming</string>
+    <string name="section_audio">Audio</string>
+    <string name="section_network">Network</string>
+    <string name="back">Back</string>
+
     <string name="pref_port">Server port</string>
     <string name="pref_device_name">Device name</string>
     <string name="pref_codec">Video codec</string>
