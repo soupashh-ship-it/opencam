@@ -4,12 +4,6 @@ An **original, open-source** Android app that turns your phone into a Wi-Fi webc
 [OBS Studio](https://obsproject.com/) — compatible with the same on-the-wire protocol family that
 the DroidCam OBS plugin and classic MJPEG clients speak, so existing desktop tools can connect.
 
-> **Clean-room notice.** This project was written from scratch based on a **functional/interface
-> specification** produced by studying DroidCam OBS (`com.dev47apps.obsdroidcam`) — see
-> [`REVERSE_ENGINEERING_REPORT.md`](../REVERSE_ENGINEERING_REPORT.md) in the parent folder.
-> No proprietary code, assets, native libraries, or branding from that app are used here.
-> Protocol constants (endpoints, framing layouts) are interoperability facts, not creative
-> expression. License: MIT.
 
 ## Why
 
