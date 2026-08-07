@@ -54,6 +54,18 @@ javac --release 8 -classpath "$ANDROID_HOME/platforms/android-34/android.jar" \
   $(find app/src/main/java -name '*.java')
 ```
 
+Release APKs are signed with the shared key in [`signing/`](signing/) (committed on purpose so
+local builds and GitHub Actions produce the same signature — replace it with your own before
+publishing to any store).
+
+## CI / Releases
+
+* **Actions → CI** — on every push to `main` it builds the signed release APK and runs the
+  Windows client's self-test against the mock phone.
+* **Actions → Release** — pushing a `v*` tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
+  builds the APK and publishes a GitHub Release with it attached.
+* **Releases** — ready-to-install APKs: <https://github.com/soupashh-ship-it/opencam/releases>
+
 ## Usage
 
 1. Install, grant **Camera**, **Microphone** (and **Notifications** on Android 13+).

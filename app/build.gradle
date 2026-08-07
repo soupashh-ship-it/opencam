@@ -20,9 +20,22 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
     }
 
+    signingConfigs {
+        // Shared distribution key (committed on purpose) so local builds and GitHub
+        // Actions produce the same signature — sideload upgrades stay seamless.
+        // Replace with your own keystore before publishing to any app store.
+        release {
+            storeFile file('../signing/opencam-release.keystore')
+            storePassword 'opencam-signing-key'
+            keyAlias 'opencam'
+            keyPassword 'opencam-signing-key'
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig signingConfigs.release
         }
     }
 }
