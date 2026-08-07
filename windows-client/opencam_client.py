@@ -179,6 +179,12 @@ def format_float(v):
 # LAN discovery (no dependencies — probes the local subnets for OpenCam phones)
 # ============================================================================
 
+def _scanable_ip(ip):
+    """True if `ip` is worth probing (not loopback, link-local, or the any-address)."""
+    return not (ip.startswith("127.") or ip.startswith("0.")
+                or ip.startswith("169.254.") or ip.startswith("255."))
+
+
 def local_ipv4s():
     """Every local IPv4 address we can find (default-route NIC + hostname aliases)."""
     addrs = set()
@@ -194,7 +200,7 @@ def local_ipv4s():
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]
-            if not ip.startswith("127."):
+            if _scanable_ip(ip):
                 addrs.add(ip)
     except OSError:
         pass
@@ -226,8 +232,11 @@ def scan_network(candidates=None, port=DEFAULT_PORT, timeout=0.2, workers=64):
             if len(parts) != 4:
                 continue
             candidates.append(base)
-            candidates += ["%s.%s.%s.%d" % (parts[0], parts[1], parts[2], i)
-                           for i in range(1, 255)]
+            if _scanable_ip(base):
+                # scan the whole /24 — skip it for loopback/link-local, the host
+                # itself (already added above) is the only useful probe there
+                candidates += ["%s.%s.%s.%d" % (parts[0], parts[1], parts[2], i)
+                               for i in range(1, 255)]
         candidates = list(dict.fromkeys(candidates))  # dedupe, keep order
 
     hits = []
@@ -617,6 +626,7 @@ class App:
         self.combo_results.bind("<<ComboboxSelected>>", self._scan_picked)
         self.combo_results.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
         self._scan_results = []
+        self._scan_port = DEFAULT_PORT
 
         self.lbl_status = tk.Label(bar, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
         self.lbl_status.pack(side=tk.RIGHT)
@@ -736,6 +746,10 @@ class App:
         if self.connected:
             self._set_status("already connected — disconnect first to scan", error=True)
             return
+        try:
+            self._scan_port = int(self.entry_port.get().strip() or DEFAULT_PORT)
+        except ValueError:
+            self._scan_port = DEFAULT_PORT
         self.btn_scan.config(state=tk.DISABLED)
         self.combo_results.set("")
         self.combo_results["values"] = []
@@ -744,7 +758,7 @@ class App:
 
     def _scan_worker(self):
         try:
-            found = scan_network()
+            found = scan_network(port=self._scan_port)
         except Exception as e:
             self._post_ui(lambda: self._scan_done([], str(e)))
             return
@@ -759,15 +773,17 @@ class App:
         if not found:
             self.combo_results["values"] = []
             self.combo_results.set("")
-            self._set_status("no phones found — is the phone streaming on the same network?",
-                             error=True)
+            self._set_status("no phones found on port %d — is the phone streaming "
+                             "on the same network?" % self._scan_port, error=True)
             return
-        labels = ["%s  (%s)  ·  %d%%" % (f["name"], f["ip"], f["battery"])
+        labels = ["%s  (%s:%d)  ·  %d%%" % (f["name"], f["ip"], self._scan_port,
+                                             f["battery"])
                   for f in found]
         self.combo_results["values"] = labels
         self.combo_results.current(0)
         plural = "" if len(found) == 1 else "s"
-        self._set_status("found %d phone%s — pick one to connect" % (len(found), plural))
+        self._set_status("found %d phone%s on port %d — pick one to connect"
+                         % (len(found), plural, self._scan_port))
 
     def _scan_picked(self, _evt=None):
         idx = self.combo_results.current()
@@ -776,9 +792,10 @@ class App:
         f = self._scan_results[idx]
         self.entry_host.delete(0, tk.END)
         self.entry_host.insert(0, f["ip"])
-        if self.entry_port.get().strip() != str(DEFAULT_PORT):
+        # connect on the port the scan actually probed
+        if self.entry_port.get().strip() != str(self._scan_port):
             self.entry_port.delete(0, tk.END)
-            self.entry_port.insert(0, str(DEFAULT_PORT))
+            self.entry_port.insert(0, str(self._scan_port))
         self._connect()
 
     # ---- connection ----------------------------------------------------------
@@ -883,6 +900,10 @@ class App:
         self._set_status("disconnected")
         self._clear_controls()
         self.fps = 0.0
+        # clear stale scan results so picking an old entry can't re-connect to a dead phone
+        self._scan_results = []
+        self.combo_results["values"] = []
+        self.combo_results.set("")
 
     # ---- command handlers -----------------------------------------------------
     def _cmd_stop(self):
