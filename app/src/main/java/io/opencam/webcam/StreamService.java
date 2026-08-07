@@ -483,13 +483,19 @@ public class StreamService extends Service implements ControlApi.Host {
     @Override
     public String phoneInfoJson() {
         String codec = Prefs.codec(this);
-        String res = Prefs.resolution(this);
+        // Report the live (possibly clamped) capture size once streaming has started so
+        // the desktop client's label reflects reality (e.g. a 4K request clamped to a
+        // 1080p-max sensor shows 1920x1080, not the raw pref). Falls back to the pref
+        // before the first start (width/height are 0 until then).
         int w = width, h = height;
-        String[] parts = res.split("x");
-        try {
-            w = Integer.parseInt(parts[0].trim());
-            h = Integer.parseInt(parts[1].trim());
-        } catch (Exception ignored) {
+        if (w <= 0 || h <= 0) {
+            String res = Prefs.resolution(this);
+            String[] parts = res.split("x");
+            try {
+                w = Integer.parseInt(parts[0].trim());
+                h = Integer.parseInt(parts[1].trim());
+            } catch (Exception ignored) {
+            }
         }
         // Device names come from Build.MODEL / user settings and can contain
         // quotes, backslashes or control characters — escape them or the JSON
