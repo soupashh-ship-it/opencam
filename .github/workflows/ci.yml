@@ -9,6 +9,7 @@ jobs:
   android:
     name: Android APK
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +37,7 @@ jobs:
   windows-client:
     name: Windows client self-test
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

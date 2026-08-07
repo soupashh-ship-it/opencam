@@ -23,12 +23,13 @@ android {
     signingConfigs {
         // Shared distribution key (committed on purpose) so local builds and GitHub
         // Actions produce the same signature — sideload upgrades stay seamless.
-        // Replace with your own keystore before publishing to any app store.
+        // NOTE: a committed keystore means anyone can sign as OpenCam. Replace it
+        // (and set OPENCAM_STORE_PASS / OPENCAM_KEY_PASS) before any real release.
         release {
             storeFile file('../signing/opencam-release.keystore')
-            storePassword 'opencam-signing-key'
+            storePassword System.getenv('OPENCAM_STORE_PASS') ?: 'opencam-signing-key'
             keyAlias 'opencam'
-            keyPassword 'opencam-signing-key'
+            keyPassword System.getenv('OPENCAM_KEY_PASS') ?: 'opencam-signing-key'
         }
     }
 
