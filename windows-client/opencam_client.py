@@ -52,6 +52,13 @@ except ImportError:
 
 import virtualcam
 
+try:
+    import vcam_mf
+    HAS_VCAM_MF = True
+except ImportError:
+    vcam_mf = None
+    HAS_VCAM_MF = False
+
 # Where settings live. When frozen into an .exe, __file__ points inside
 # PyInstaller's temp extraction dir (wiped on exit) — prefer the exe's folder so
 # the config stays portable. If that folder isn't writable (e.g. Program Files),
@@ -832,6 +839,15 @@ class App:
     def _vcam_hint(self):
         """Quiet first-run hint so users know the camera can be exposed to apps."""
         try:
+            if HAS_VCAM_MF and vcam_mf.supported():
+                if vcam_mf.is_registered():
+                    self._set_status("tip: enable 'Virtual cam' to expose it as "
+                                     "'%s' (works in WhatsApp, Discord, OBS)"
+                                     % vcam_mf.DEVICE_NAME)
+                else:
+                    self._set_status("tip: enable 'Virtual cam' after connecting — "
+                                     "one-time admin, works in WhatsApp too")
+                return
             if virtualcam.filter_registered():
                 if virtualcam.device_name() != virtualcam.DEVICE_NAME:
                     self._set_status("tip: enable 'Virtual cam' to expose it as '%s'"
@@ -1568,22 +1584,45 @@ class App:
             # button back so it isn't stuck disabled until the next connect
             self._post_ui(lambda: self.btn_vcam.config(state=tk.NORMAL))
             return
+        info = self.phone.info
+        w, h, fps = 1280, 720, 30
+        iw, ih = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
+        if 320 <= iw <= 1920 and 320 <= ih <= 1920:
+            w, h = iw, ih
+        fps = max(1, min(60, int(info.get("fps", 30) or 30)))
+
+        # Preferred backend: the Media Foundation virtual camera (Win11 22H2+).
+        # It's a real PnP camera, so it shows up in WhatsApp/UWP apps AND in
+        # DirectShow apps (Discord, OBS) — one camera everywhere. Falls back to
+        # the old DirectShow-only camera when MF isn't available.
+        if HAS_VCAM_MF and vcam_mf.supported():
+            try:
+                err = vcam_mf.prepare()
+                if err:
+                    _log("vcam_mf prepare failed: %s" % err)
+                    self._post_ui(lambda e=err: self._vcam_fail(e))
+                    return
+                vc = vcam_mf.MfVcam(w, h, fps)
+                err = vc.start()
+                if not err:
+                    self.vcam = vc
+                    _log("MF virtual camera on (backend: MFCreateVirtualCamera)")
+                    self._post_ui(lambda: self._vcam_on(w, h))
+                    return
+                _log("MF virtual camera failed (%s) — falling back to DirectShow" % err)
+            except Exception as e:
+                _log("MF virtual camera error: %s" % e)
+
         try:
             err = virtualcam.prepare()
             if err:
                 _log("vcam prepare failed: %s" % err)
                 self._post_ui(lambda e=err: self._vcam_fail(e))
                 return
-            info = self.phone.info
-            w, h, fps = 1280, 720, 30
-            iw, ih = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
-            if 320 <= iw <= 1920 and 320 <= ih <= 1920:
-                w, h = iw, ih
-            fps = max(1, min(60, int(info.get("fps", 30) or 30)))
             vc = virtualcam.VirtualCam(w, h, fps)
             vc.start()
             self.vcam = vc
-            _log("virtual camera on: %dx%d@%d" % (w, h, fps))
+            _log("virtual camera on (backend: DirectShow): %dx%d@%d" % (w, h, fps))
             self._post_ui(lambda w=w, h=h: self._vcam_on(w, h))
         except Exception as e:
             _log("vcam start failed: %s" % e)
@@ -1592,8 +1631,10 @@ class App:
     def _vcam_on(self, w, h):
         self.vcam_active = True
         self.btn_vcam.config(state=tk.NORMAL, text="Virtual cam: ON")
+        name = vcam_mf.DEVICE_NAME if (HAS_VCAM_MF and isinstance(
+            self.vcam, vcam_mf.MfVcam)) else virtualcam.DEVICE_NAME
         self._set_status("virtual camera on — '%s' is now available in apps"
-                         % virtualcam.DEVICE_NAME)
+                         % name)
 
     def _vcam_fail(self, err):
         self.btn_vcam.config(state=tk.NORMAL)

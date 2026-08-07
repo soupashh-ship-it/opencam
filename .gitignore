@@ -20,3 +20,17 @@ local.properties
 # Throwaway compile-check stub (regenerated locally when needed)
 build/stub/
 build/classes/
+
+# VCam C++ build output (MSBuild x64/ + NuGet packages)
+windows-client/vcam_mf_cpp/x64/
+windows-client/vcam_mf_cpp/VCamSample/x64/
+windows-client/vcam_mf_cpp/VCamSampleSource/x64/
+windows-client/vcam_mf_cpp/packages/
+windows-client/vcam_mf_cpp/.vs/
+windows-client/_vcam_ref_cpp/x64/
+windows-client/_vcam_ref_cpp/VCamSample/x64/
+windows-client/_vcam_ref_cpp/VCamSampleSource/x64/
+windows-client/_vcam_ref_cpp/packages/
+windows-client/_vcam_ref_cpp/.vs/
+windows-client/_vcam_ref_net/
+windows-client/nuget.exe
