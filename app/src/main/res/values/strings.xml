@@ -39,13 +39,13 @@
     <string name="pref_jpeg_quality">JPEG quality (MJPEG mode)</string>
 
     <string-array name="codec_entries">
+        <item>H.264 / AVC (default)</item>
         <item>MJPEG (compatible with everything)</item>
-        <item>H.264 / AVC</item>
         <item>H.265 / HEVC</item>
     </string-array>
     <string-array name="codec_values">
-        <item>jpg</item>
         <item>avc</item>
+        <item>jpg</item>
         <item>hevc</item>
     </string-array>
 

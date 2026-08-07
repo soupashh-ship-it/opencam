@@ -35,7 +35,10 @@ public final class Prefs {
     }
 
     public static String codec(Context c) {
-        return sp(c).getString(CODEC, "jpg");
+        // H.264 is the default stream codec: MJPEG at 1080p/quality-92 is 18-48MB/s
+        // (too heavy for WiFi), while H.264 delivers the same quality at a few Mbps
+        // and makes 1080p60 realistic on modern phones.
+        return sp(c).getString(CODEC, "avc");
     }
 
     public static String resolution(Context c) {
