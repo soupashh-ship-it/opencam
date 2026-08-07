@@ -39,7 +39,11 @@ slider.
 2. On the PC: double-click `run_client.bat` (or `python opencam_client.py`).
 3. Enter the phone's IP, leave the port at `4747`, click **Connect**.
 
-The last IP/port is remembered for next time (`opencam_client.json`).
+The last IP/port is remembered for next time (`opencam_client.json`). On launch the
+client **auto-connects** to the last phone and, if enabled, switches on the **Virtual
+cam** — so it's ready for Discord/Zoom as soon as it opens. Both behaviours can be
+toggled with the *Auto-connect* and *Virtual cam on connect* checkboxes in the top
+bar (persisted per machine).
 
 ### Using it as a webcam in OBS
 

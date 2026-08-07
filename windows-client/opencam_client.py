@@ -60,6 +60,16 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
 DEFAULT_PORT = 4747
 BOUNDARY = b"--dcmjpeg"
+LOG_FILE = os.path.join(_BASE_DIR, "opencam_client.log")
+
+
+def _log(msg):
+    """Append a timestamped line to opencam_client.log (best effort)."""
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + str(msg) + "\n")
+    except Exception:
+        pass
 
 
 # ============================================================================
@@ -307,6 +317,23 @@ class VideoStream(threading.Thread):
                 self.on_error("phone returned %s (is another client already connected?)"
                               % first.decode("latin1", "replace"))
                 return
+            # The stream endpoint answers with multipart MJPEG. If the phone instead
+            # answered with an HTML page (status is still 200), the video is already
+            # streaming to another client — report that clearly instead of hanging on
+            # a stale multipart parse until the socket times out.
+            if b"multipart" not in head.lower():
+                try:
+                    self._sock.close()
+                except OSError:
+                    pass
+                if b"text/html" in head.lower():
+                    self.on_error("the phone is already streaming to another client "
+                                  "(web remote, OBS, or another OpenCam window) — close "
+                                  "it, then reconnect")
+                else:
+                    self.on_error("unexpected response from the phone's stream endpoint "
+                                  "(another client may be connected)")
+                return
             while not self._halt.is_set():
                 # boundary line
                 line = reader.read_until(b"\r\n")
@@ -481,15 +508,21 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             cfg = json.load(f)
-            return cfg.get("host", ""), int(cfg.get("port", DEFAULT_PORT))
+            return {
+                "host": cfg.get("host", ""),
+                "port": int(cfg.get("port", DEFAULT_PORT)),
+                "autoConnect": bool(cfg.get("autoConnect", True)),
+                "autoVcam": bool(cfg.get("autoVcam", True)),
+            }
     except Exception:
-        return "", DEFAULT_PORT
+        return {"host": "", "port": DEFAULT_PORT,
+                "autoConnect": True, "autoVcam": True}
 
 
-def save_config(host, port):
+def save_config(cfg):
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump({"host": host, "port": int(port)}, f)
+            json.dump(cfg, f)
     except Exception:
         pass
 
@@ -529,14 +562,23 @@ class App:
         self._worker.start()
 
         self._build_ui()
-        host, port = load_config()
-        if host:
-            self.entry_host.insert(0, host)
-            self.entry_port.insert(0, str(port))
+        cfg = load_config()
+        self.var_auto_connect.set(cfg["autoConnect"])
+        self.var_auto_vcam.set(cfg["autoVcam"])
+        if cfg["host"]:
+            # Replace the default port text, never append — inserting twice produced
+            # "47474747" and made every connect/scan hit an invalid port (refused).
+            self.entry_host.delete(0, tk.END)
+            self.entry_host.insert(0, cfg["host"])
+            self.entry_port.delete(0, tk.END)
+            self.entry_port.insert(0, str(cfg["port"]))
 
         self.root.after(40, self._tick)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(1200, self._vcam_hint)
+        if cfg["autoConnect"] and cfg["host"]:
+            _log("auto-connect scheduled for %s:%d" % (cfg["host"], cfg["port"]))
+            self.root.after(1500, self._auto_connect)
 
     def _vcam_hint(self):
         """Quiet first-run hint so users know the camera can be exposed to apps."""
@@ -645,6 +687,22 @@ class App:
         self.combo_results.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
         self._scan_results = []
         self._scan_port = DEFAULT_PORT
+
+        # startup behaviour toggles (persisted in opencam_client.json)
+        self.var_auto_connect = tk.BooleanVar(value=True)
+        self.chk_auto_connect = tk.Checkbutton(
+            bar, text="Auto-connect", variable=self.var_auto_connect,
+            command=self._on_auto_toggle, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=ACCENT, selectcolor=CARD, font=("Segoe UI", 9),
+            highlightthickness=0, cursor="hand2")
+        self.chk_auto_connect.pack(side=tk.LEFT, padx=(8, 0))
+        self.var_auto_vcam = tk.BooleanVar(value=True)
+        self.chk_auto_vcam = tk.Checkbutton(
+            bar, text="Virtual cam on connect", variable=self.var_auto_vcam,
+            command=self._on_auto_toggle, bg=BG, fg=TEXT, activebackground=BG,
+            activeforeground=ACCENT, selectcolor=CARD, font=("Segoe UI", 9),
+            highlightthickness=0, cursor="hand2")
+        self.chk_auto_vcam.pack(side=tk.LEFT, padx=(8, 0))
 
         self.lbl_status = tk.Label(bar, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
         self.lbl_status.pack(side=tk.RIGHT)
@@ -760,6 +818,20 @@ class App:
         if phone:
             phone.set_wb_level(v)
 
+    def _on_auto_toggle(self):
+        """Persist the startup toggles when either checkbox flips."""
+        cfg = load_config()
+        cfg["autoConnect"] = self.var_auto_connect.get()
+        cfg["autoVcam"] = self.var_auto_vcam.get()
+        save_config(cfg)
+
+    def _auto_connect(self):
+        """Startup hook: dial the last phone automatically."""
+        if self.connected:
+            return
+        _log("auto-connect firing")
+        self._connect()
+
     # ---- discovery ------------------------------------------------------------
     def _cmd_scan(self):
         if self.connected:
@@ -769,10 +841,17 @@ class App:
             self._scan_port = int(self.entry_port.get().strip() or DEFAULT_PORT)
         except ValueError:
             self._scan_port = DEFAULT_PORT
+        if not (1 <= self._scan_port <= 65535):
+            _log("bad port in scan field: %r — resetting to %d"
+                 % (self.entry_port.get(), DEFAULT_PORT))
+            self._scan_port = DEFAULT_PORT
+            self.entry_port.delete(0, tk.END)
+            self.entry_port.insert(0, str(DEFAULT_PORT))
         self.btn_scan.config(state=tk.DISABLED)
         self.combo_results.set("")
         self.combo_results["values"] = []
         self._set_status("scanning the network for OpenCam phones…")
+        _log("scan start (port %d)" % self._scan_port)
         threading.Thread(target=self._scan_worker, daemon=True).start()
 
     def _scan_worker(self):
@@ -789,6 +868,7 @@ class App:
             self._set_status("scan failed: %s" % err, error=True)
             return
         self._scan_results = found
+        _log("scan found %d device(s): %s" % (len(found), found))
         if not found:
             self.combo_results["values"] = []
             self.combo_results.set("")
@@ -808,14 +888,18 @@ class App:
         idx = self.combo_results.current()
         if not (0 <= idx < len(self._scan_results)):
             return
-        f = self._scan_results[idx]
+        picked = self._scan_results[idx]
+        _log("scan pick: %s" % picked)
         self.entry_host.delete(0, tk.END)
-        self.entry_host.insert(0, f["ip"])
+        self.entry_host.insert(0, picked["ip"])
         # connect on the port the scan actually probed
         if self.entry_port.get().strip() != str(self._scan_port):
             self.entry_port.delete(0, tk.END)
             self.entry_port.insert(0, str(self._scan_port))
-        self._connect()
+        # A phone can advertise several IPs (Wi-Fi + hotspot/USB) and only one is
+        # reachable from this PC. If the picked one fails, fall back through the rest.
+        others = [x for x in self._scan_results if x["ip"] != picked["ip"]]
+        self._connect(picked["ip"], self._scan_port, candidates=others)
 
     # ---- connection ----------------------------------------------------------
     def _toggle_connect(self):
@@ -824,9 +908,10 @@ class App:
         else:
             self._connect()
 
-    def _connect(self):
-        host = self.entry_host.get().strip()
-        port_s = self.entry_port.get().strip()
+    def _connect(self, host=None, port=None, candidates=None):
+        if host is None:
+            host = self.entry_host.get().strip()
+        port_s = self.entry_port.get().strip() if port is None else str(port)
         if not host:
             self._set_status("enter the phone's IP address", error=True)
             return
@@ -835,10 +920,18 @@ class App:
         except ValueError:
             self._set_status("invalid port", error=True)
             return
+        if not (1 <= port <= 65535):
+            _log("bad port in connect: %r — resetting to %d" % (port_s, DEFAULT_PORT))
+            port = DEFAULT_PORT
+            self.entry_port.delete(0, tk.END)
+            self.entry_port.insert(0, str(DEFAULT_PORT))
 
+        _log("connect requested: %s:%d (fallback candidates: %d)"
+             % (host, port, len(candidates or [])))
         self._set_status("connecting…")
         self.btn_connect.config(state=tk.DISABLED)
-        threading.Thread(target=self._connect_worker, args=(host, port), daemon=True).start()
+        threading.Thread(target=self._connect_worker,
+                         args=(host, port, list(candidates or [])), daemon=True).start()
 
     def _apply_camera_info(self, cams, info):
         """Update camera list + sliders on the GUI thread from worker-fetched info."""
@@ -852,18 +945,34 @@ class App:
         else:
             self._update_sliders(info)
 
-    def _connect_worker(self, host, port):
-        try:
-            phone = Phone(host, port)
-            info = phone.ping()
-            if not info:
-                raise ConnectionError("no /v1/phone/info response")
-            # start video first so the UI has frames as soon as possible
-            self.phone = phone
-            self._start_streams()
-            self._post_ui(lambda: self._connected(host, port, info))
-        except Exception as e:
-            self._post_ui(lambda: self._connect_failed(str(e)))
+    def _connect_worker(self, host, port, candidates=None):
+        attempts = 1
+        while True:
+            _log("connect attempt %d: %s:%d" % (attempts, host, port))
+            try:
+                phone = Phone(host, port)
+                info = phone.ping()
+                if not info:
+                    raise ConnectionError("no /v1/phone/info response")
+                # start video first so the UI has frames as soon as possible
+                self.phone = phone
+                self._start_streams()
+                self._post_ui(lambda host=host, port=port, info=info:
+                              self._connected(host, port, info))
+                return
+            except Exception as e:
+                _log("connect to %s:%d failed: %s" % (host, port, e))
+                if candidates:
+                    nxt = candidates.pop(0)
+                    prev = "%s:%d" % (host, port)
+                    host = nxt["ip"]
+                    attempts += 1
+                    self._post_ui(lambda prev=prev, nxt=host, n=attempts, e=e:
+                                  self._set_status("%s unreachable (%s) — trying %s (%d)…"
+                                                   % (prev, str(e)[:70], nxt, n)))
+                    continue
+                self._post_ui(lambda e=e: self._connect_failed(str(e)))
+                return
 
     def _start_streams(self):
         self.latest = None
@@ -880,17 +989,24 @@ class App:
 
     def _connected(self, host, port, info):
         self.connected = True
+        _log("connected to %s:%d (info: %s)" % (host, port, info))
         self.btn_connect.config(text="Disconnect", state=tk.NORMAL)
         name = info.get("name") or host
         self.lbl_device.config(text="%s  ·  %d×%d @%d fps  ·  %s"
                                 % (name, info.get("width", 0), info.get("height", 0),
                                    info.get("fps", 0), info.get("codec", "?")))
-        save_config(host, port)
+        save_config({"host": host, "port": int(port),
+                     "autoConnect": self.var_auto_connect.get(),
+                     "autoVcam": self.var_auto_vcam.get()})
         self._set_status("connected")
         self._last_aux = 0.0
         self._refresh_aux()
+        if self.var_auto_vcam.get() and not self.vcam_active:
+            _log("auto-enabling virtual camera")
+            self.root.after(800, self._cmd_vcam)
 
     def _connect_failed(self, err):
+        _log("connect failed: %s" % err)
         self.btn_connect.config(state=tk.NORMAL)
         self._set_status("connect failed: %s — is the phone streaming? "
                          "(tap Start Streaming in the OpenCam app, same network)" % err,
@@ -936,7 +1052,8 @@ class App:
         phone = self.phone
         if not phone:
             return
-        self._run_control(phone.restart, "restart sent")
+        self._run_control(phone.restart,
+                         "restart sent — phone re-applies settings (fps/resolution)")
 
     def _cmd_camera(self):
         phone = self.phone
@@ -986,9 +1103,12 @@ class App:
         threading.Thread(target=self._vcam_start_worker, daemon=True).start()
 
     def _vcam_start_worker(self):
+        if self.phone is None or not self.connected:
+            return  # disconnected while the 800ms auto-start delay was pending
         try:
             err = virtualcam.prepare()
             if err:
+                _log("vcam prepare failed: %s" % err)
                 self._post_ui(lambda e=err: self._vcam_fail(e))
                 return
             info = self.phone.info
@@ -1000,8 +1120,10 @@ class App:
             vc = virtualcam.VirtualCam(w, h, fps)
             vc.start()
             self.vcam = vc
+            _log("virtual camera on: %dx%d@%d" % (w, h, fps))
             self._post_ui(lambda w=w, h=h: self._vcam_on(w, h))
         except Exception as e:
+            _log("vcam start failed: %s" % e)
             self._post_ui(lambda e=e: self._vcam_fail(str(e)))
 
     def _vcam_on(self, w, h):
@@ -1032,6 +1154,7 @@ class App:
             self.vcam.send(img)
 
     def _on_stream_error(self, msg):
+        _log("stream error: %s" % msg)
         self._post_ui(lambda: self._set_status(msg, error=True))
         self._post_ui(self._disconnect)
 

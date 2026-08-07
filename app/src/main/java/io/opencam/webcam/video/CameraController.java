@@ -570,8 +570,9 @@ public class CameraController {
             return;
         }
         try {
-            // target frame rate (AE-driven)
-            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<>(fps, fps));
+            // target frame rate (AE-driven) — prefer a range the sensor actually
+            // advertises (an unsupported fixed range makes some HALs fall back to 30).
+            builder.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, pickFpsRange(fps));
 
             // digital zoom
             Rect activeArray = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
@@ -696,6 +697,52 @@ public class CameraController {
             mode = CaptureRequest.CONTROL_AF_MODE_AUTO;
         }
         builder.set(CaptureRequest.CONTROL_AF_MODE, mode);
+    }
+
+    /**
+     * Choose the AE target-fps range closest to the requested rate that this sensor
+     * actually advertises. Prefers the exact fixed range (e.g. (60,60)); otherwise the
+     * range whose upper bound is nearest to (but not below) the target, so a 60fps
+     * request on a sensor with only (30,60) still reaches 60 instead of collapsing to 30.
+     */
+    private Range<Integer> pickFpsRange(int target) {
+        if (characteristics == null) {
+            return new Range<>(target, target);
+        }
+        Range<Integer>[] ranges = characteristics.get(
+                CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        if (ranges == null || ranges.length == 0) {
+            return new Range<>(target, target);
+        }
+        for (Range<Integer> r : ranges) {
+            if (r.getLower() == target && r.getUpper() == target) {
+                return r;
+            }
+        }
+        Range<Integer> best = null;
+        int bestDist = Integer.MAX_VALUE;
+        for (Range<Integer> r : ranges) {
+            int upper = r.getUpper();
+            if (upper < target) {
+                continue; // only ranges that can at least reach the target fps
+            }
+            int dist = upper - target;
+            if (dist < bestDist) {
+                best = r;
+                bestDist = dist;
+            }
+        }
+        if (best == null) {
+            // nothing reaches the target (e.g. target 60 but max range is 30) —
+            // take the highest available so we still get the best the sensor can do.
+            best = ranges[0];
+            for (Range<Integer> r : ranges) {
+                if (r.getUpper() > best.getUpper()) {
+                    best = r;
+                }
+            }
+        }
+        return best;
     }
 
     private boolean hasAf() {

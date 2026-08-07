@@ -656,11 +656,44 @@ public class StreamService extends Service implements ControlApi.Host {
         main.post(new Runnable() {
             @Override
             public void run() {
+                if (state != STATE_RUNNING) {
+                    return;
+                }
+                // Restart the whole pipeline, not just the server, so setting changes
+                // (fps, resolution, port, codec, …) take effect immediately — the old
+                // behaviour only rebound the socket and silently kept the old camera
+                // config, which made "Restart" useless for applying new settings.
+                final FrameSink v = videoSink;
+                final FrameSink a = audioSink;
+                port = Prefs.port(StreamService.this);
+                parseResolution(Prefs.resolution(StreamService.this));
+                fps = Prefs.fps(StreamService.this);
                 if (server != null) {
                     server.shutdown();
+                    server = null;
+                }
+                openCameraPipeline();
+                // Re-attach the still-connected clients to the fresh pipeline.
+                if (v != null) {
+                    if (v instanceof FramedSink) {
+                        if (usingEncoder && pipeline != null) {
+                            pipeline.attachSink(v);
+                            videoSink = v;
+                        } else {
+                            Logs.i("framed client dropped after restart — no encoder available");
+                        }
+                    } else if (mjpeg != null) {
+                        mjpeg.sink = v;
+                        videoSink = v;
+                    }
+                }
+                if (a != null && audio != null) {
+                    audio.attachSink(micMuted ? null : a);
+                    audioSink = a;
                 }
                 startServer();
-                Logs.i("server restarted");
+                updateNotification();
+                Logs.i("restarted with fresh settings: " + width + "x" + height + " @" + fps + "fps");
             }
         });
     }
