@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simple camera glyph used as the launcher icon (vector, no binaries needed). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="#FF101418"
+        android:pathData="M0,0h48v48h-48z" />
+    <path
+        android:fillColor="#FF00C4FF"
+        android:pathData="M14,12 L17,8 L31,8 L34,12 L38,12 A4,4 0 0 1 42,16 L42,36 A4,4 0 0 1 38,40 L10,40 A4,4 0 0 1 6,36 L6,16 A4,4 0 0 1 10,12 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M24,17 A8,8 0 1 0 24,33 A8,8 0 1 0 24,17 Z" />
+    <path
+        android:fillColor="#FF00C4FF"
+        android:pathData="M24,21 A4,4 0 1 1 24,29 A4,4 0 1 1 24,21 Z" />
+</vector>

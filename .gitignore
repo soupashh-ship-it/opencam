@@ -1,0 +1,22 @@
+# Build output
+build/
+.gradle/
+*.apk
+*.aab
+
+# Windows client (PyInstaller)
+windows-client/build/
+windows-client/dist/
+windows-client/__pycache__/
+windows-client/*.spec
+windows-client/opencam_client.json
+
+# IDE
+.idea/
+*.iml
+local.properties
+.DS_Store
+
+# Throwaway compile-check stub (regenerated locally when needed)
+build/stub/
+build/classes/
