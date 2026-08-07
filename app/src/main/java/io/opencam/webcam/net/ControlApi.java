@@ -68,6 +68,12 @@ public final class ControlApi {
         void onRestart();
 
         void onStop();
+
+        /** Change the phone's video codec setting (jpg|avc|hevc), applied live. */
+        void setPhoneCodec(String codec);
+
+        /** Change the phone's encoded-video bitrate (kbps), applied live. */
+        void setPhoneBitrate(int kbps);
     }
 
     private static final Pattern WxH = Pattern.compile("(\\d+)x(\\d+)");
@@ -155,6 +161,24 @@ public final class ControlApi {
         }
         if (path.equals("/v1/phone/info")) {
             HttpResponse.sendJson(socket, host.phoneInfoJson());
+            return true;
+        }
+        if (path.startsWith("/v1/phone/codec/")) {
+            // Desktop client setting the video codec (jpg|avc|hevc) so the phone's
+            // own settings stay in sync with the client's choice.
+            String codec = path.substring("/v1/phone/codec/".length()).trim();
+            if (codec.equals("jpg") || codec.equals("avc") || codec.equals("hevc")) {
+                host.setPhoneCodec(codec);
+            }
+            HttpResponse.sendText(socket, "");
+            return true;
+        }
+        if (path.startsWith("/v1/phone/bitrate/")) {
+            int kbps = intPathParam(path, "/v1/phone/bitrate/");
+            if (kbps > 0) {
+                host.setPhoneBitrate(kbps);
+            }
+            HttpResponse.sendText(socket, "");
             return true;
         }
         if (path.equals("/v1/camera/camera_list")) {

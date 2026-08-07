@@ -43,6 +43,13 @@ except ImportError:
     Image = ImageTk = None
     HAS_PIL = False
 
+try:
+    import av  # PyAV — bundled FFmpeg decode/encode for the H.264/H.265 path
+    HAS_AV = True
+except ImportError:
+    av = None
+    HAS_AV = False
+
 import virtualcam
 
 # Where settings live. When frozen into an .exe, __file__ points inside
@@ -59,8 +66,17 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     os.makedirs(_BASE_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
 DEFAULT_PORT = 4747
+DEFAULT_BITRATE = 8000  # kbps, used for the encoded (H.264/H.265) stream modes
 BOUNDARY = b"--dcmjpeg"
 LOG_FILE = os.path.join(_BASE_DIR, "opencam_client.log")
+
+# Stream modes: (label, phone codec string, av demuxer format or None for MJPEG)
+STREAM_MODES = [
+    ("MJPEG", "jpg", None),
+    ("H.264", "avc", "h264"),
+    ("H.265 / HEVC", "hevc", "hevc"),
+]
+BITRATE_CHOICES = [2000, 4000, 6000, 8000, 12000, 16000, 20000]
 
 
 def _log(msg):
@@ -152,6 +168,14 @@ class Phone:
 
     def restart(self):
         self.api("/v1/restart", "PUT")
+
+    def set_codec(self, codec):
+        """Set the phone's video codec setting (jpg|avc|hevc) — keeps it in sync."""
+        self.api("/v1/phone/codec/%s" % codec, "PUT")
+
+    def set_bitrate(self, kbps):
+        """Set the phone's encoded-video bitrate (kbps), applied live if streaming."""
+        self.api("/v1/phone/bitrate/%d" % int(kbps), "PUT")
 
     def set_camera(self, index):
         self.api("/v1/camera/active/%d" % index, "PUT")
@@ -369,6 +393,188 @@ class VideoStream(threading.Thread):
                 self.on_error("video stream error: %s" % e)
 
 
+class FramedVideoStream(threading.Thread):
+    """
+    H.264/H.265 video client for the modern framed protocol (v4/v5).
+
+    The phone answers GET /v5/video/{codec}/{w}x{h} with a raw framed byte
+    stream — no HTTP headers:
+
+        [int64 LE pts µs][int32 LE len][payload]   (len == -1 = end of stream)
+
+    The first payload is the codec-config (SPS/PPS), replayed for every client,
+    then one encoded access unit per frame (Annex-B). We feed the payloads into
+    a PyAV h264/hevc demuxer through a blocking file-like and call
+    on_frame(PIL.Image) per decoded frame.
+    """
+
+    def __init__(self, host, port, codec, width, height, on_frame, on_error):
+        super().__init__(daemon=True)
+        self.host = host
+        self.port = port
+        self.codec = codec          # "avc" | "hevc"
+        self.fmt = "h264" if codec == "avc" else "hevc"
+        self.width = width
+        self.height = height
+        self.on_frame = on_frame
+        self.on_error = on_error
+        self._halt = threading.Event()
+        self._sock = None
+        self._q = queue.Queue()     # Annex-B bytes, consumed by the demuxer feed
+
+    def stop(self):
+        self._halt.set()
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        # wake the demuxer feed so the run loop can exit
+        try:
+            self._q.put(None)
+        except Exception:
+            pass
+
+    def run(self):
+        if not HAS_AV:
+            self.on_error("H.264/H.265 streaming needs the 'av' package "
+                          "(pip install av) — rebuild or reinstall the client")
+            return
+        try:
+            self._sock = socket.create_connection((self.host, self.port), timeout=10)
+            self._sock.settimeout(5)
+            self._sock.sendall(b"GET /v5/video/%s/%dx%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
+                               % (self.codec.encode(), self.width, self.height,
+                                  self.host.encode(), self.port))
+            # The framed protocol is raw bytes — but a refused stream answers with
+            # BUSY_HTML (HTTP/text). Peek at the first 12 bytes so we can report
+            # that clearly instead of mis-parsing an HTML page as a frame header.
+            first = _read_exact_from(self._sock, 12)
+            if first is None or len(first) < 12:
+                self.on_error("video stream ended before any data")
+                return
+            if first.startswith(b"HTTP/") or first.startswith(b"<"):
+                self.on_error("the phone is already streaming to another client "
+                              "— close it, then reconnect")
+                return
+            # The first 12 bytes are a real frame header — the reader loop starts
+            # from that prefix instead of reading a fresh 12-byte header.
+            self._prefix = first
+            # Reader thread: pulls framed packets off the socket and hands the
+            # Annex-B payload bytes to the demuxer queue. Runs separately so the
+            # decode loop below can block on the feed without stalling the socket.
+            reader = threading.Thread(target=self._read_loop, daemon=True)
+            reader.start()
+            feed = _AnnexBFeed(self._q)
+            try:
+                container = av.open(feed, format=self.fmt, mode="r")
+            except Exception as e:
+                self.on_error("could not open %s stream: %s" % (self.fmt.upper(), e))
+                return
+            vstream = container.streams.video[0]
+            while not self._halt.is_set():
+                try:
+                    frame = next(container.decode(vstream))
+                except StopIteration:
+                    break
+                except Exception:
+                    # a corrupt access unit shouldn't kill the session — skip it
+                    continue
+                try:
+                    img = frame.to_image()
+                except Exception:
+                    continue
+                self.on_frame(img)
+        except ConnectionError:
+            if not self._halt.is_set():
+                self.on_error("video stream ended")
+        except OSError as e:
+            if not self._halt.is_set():
+                self.on_error("video stream error: %s" % e)
+        except Exception as e:  # noqa: BLE001
+            if not self._halt.is_set():
+                self.on_error("video stream error: %s" % e)
+
+    def _read_loop(self):
+        """Read [pts i64][len i32][payload] packets and queue the payload bytes."""
+        sock = self._sock
+        try:
+            prefix = getattr(self, "_prefix", None)
+            while not self._halt.is_set():
+                if prefix is not None:
+                    hdr, prefix = prefix, None  # first header was pre-read
+                else:
+                    hdr = _read_exact_from(sock, 12)
+                    if hdr is None:
+                        break
+                _pts, length = struct.unpack("<qi", hdr)
+                if length <= 0:  # -1 = end-of-stream marker
+                    break
+                payload = _read_exact_from(sock, length)
+                if payload is None:
+                    break
+                if self._halt.is_set():
+                    break
+                self._q.put(payload)
+        except OSError:
+            pass
+        except Exception:
+            pass
+        finally:
+            self._q.put(None)  # EOF for the demuxer feed
+
+
+class _AnnexBFeed:
+    """Blocking file-like that hands demuxer reads to the socket reader thread.
+
+    Once the reader signals EOF (queue gets None), every later read returns b''
+    immediately — a one-shot EOF makes FFmpeg block forever on the follow-up
+    read it issues to confirm the end of stream.
+    """
+
+    def __init__(self, q):
+        self.q = q
+        self._buf = b""
+        self._eof = False
+
+    def read(self, n=-1):
+        if self._eof:
+            return b""
+        while not self._buf:
+            chunk = self.q.get()
+            if chunk is None:
+                self._eof = True
+                return b""  # sticky EOF
+            self._buf = chunk
+        if n is None or n < 0:
+            out, self._buf = self._buf, b""
+            return out
+        out = self._buf[:n]
+        self._buf = self._buf[n:]
+        return out
+
+    def seek(self, offset, whence=0):
+        # not seekable — always signal failure so FFmpeg treats us as a pipe
+        return -1
+
+    def tell(self):
+        return 0
+
+    def readable(self):
+        return True
+
+    def writable(self):
+        return False
+
+    @property
+    def mode(self):
+        return "rb"
+
+    @property
+    def name(self):
+        return "opencam-stream"
+
+
 class AudioStream(threading.Thread):
     """Reads framed AAC from /v2/audio and pipes ADTS into ffplay."""
 
@@ -511,11 +717,14 @@ def load_config():
             return {
                 "host": cfg.get("host", ""),
                 "port": int(cfg.get("port", DEFAULT_PORT)),
+                "codec": cfg.get("codec", "jpg"),
+                "bitrate": int(cfg.get("bitrate", DEFAULT_BITRATE)),
                 "autoConnect": bool(cfg.get("autoConnect", True)),
                 "autoVcam": bool(cfg.get("autoVcam", True)),
             }
     except Exception:
         return {"host": "", "port": DEFAULT_PORT,
+                "codec": "jpg", "bitrate": DEFAULT_BITRATE,
                 "autoConnect": True, "autoVcam": True}
 
 
@@ -561,8 +770,14 @@ class App:
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
+        self.codec = "jpg"        # active stream codec: jpg | avc | hevc
+        self.bitrate = DEFAULT_BITRATE
         self._build_ui()
         cfg = load_config()
+        self.codec = cfg["codec"] if cfg["codec"] in ("jpg", "avc", "hevc") else "jpg"
+        self.bitrate = cfg["bitrate"]
+        self._set_codec_ui(self.codec)
+        self._set_bitrate_ui(self.bitrate)
         self.var_auto_connect.set(cfg["autoConnect"])
         self.var_auto_vcam.set(cfg["autoVcam"])
         if cfg["host"]:
@@ -687,6 +902,27 @@ class App:
         self.combo_results.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
         self._scan_results = []
         self._scan_port = DEFAULT_PORT
+
+        # stream mode: codec + bitrate (persisted in opencam_client.json)
+        tk.Label(bar, text="Codec:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
+        self.combo_codec = ttk.Combobox(bar, state="readonly", width=10,
+                                        style="Scan.TCombobox",
+                                        values=[m[0] for m in STREAM_MODES],
+                                        font=("Segoe UI", 9))
+        self.combo_codec.bind("<<ComboboxSelected>>", self._codec_picked)
+        self.combo_codec.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
+        self.combo_codec.current(0)
+
+        tk.Label(bar, text="Bitrate:", bg=BG, fg=MUTED,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
+        self.combo_bitrate = ttk.Combobox(bar, state="readonly", width=7,
+                                          style="Scan.TCombobox",
+                                          values=[str(b) for b in BITRATE_CHOICES],
+                                          font=("Segoe UI", 9))
+        self.combo_bitrate.bind("<<ComboboxSelected>>", self._bitrate_picked)
+        self.combo_bitrate.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
+        self.combo_bitrate.current(2)  # 6000
 
         # startup behaviour toggles (persisted in opencam_client.json)
         self.var_auto_connect = tk.BooleanVar(value=True)
@@ -901,6 +1137,92 @@ class App:
         others = [x for x in self._scan_results if x["ip"] != picked["ip"]]
         self._connect(picked["ip"], self._scan_port, candidates=others)
 
+    # ---- stream mode (codec / bitrate) ---------------------------------------
+    def _codec_picked(self, _evt=None):
+        idx = max(0, self.combo_codec.current())
+        label, codec, _fmt = STREAM_MODES[idx]
+        _log("codec selected: %s (%s)" % (label, codec))
+        self.codec = codec
+        self._persist_stream_settings()
+        # MJPEG has no bitrate knob — grey the selector out for it
+        self.combo_bitrate.config(state="disabled" if codec == "jpg" else "readonly")
+        if self.connected:
+            self._apply_stream_mode("codec")
+
+    def _bitrate_picked(self, _evt=None):
+        try:
+            self.bitrate = int(self.combo_bitrate.get())
+        except (ValueError, tk.TclError):
+            self.bitrate = DEFAULT_BITRATE
+        _log("bitrate selected: %d kbps" % self.bitrate)
+        self._persist_stream_settings()
+        if self.connected and self.codec != "jpg":
+            self._apply_stream_mode("bitrate")
+
+    def _set_codec_ui(self, codec):
+        for i, m in enumerate(STREAM_MODES):
+            if m[1] == codec:
+                self.combo_codec.current(i)
+                break
+        self.combo_bitrate.config(state="disabled" if codec == "jpg" else "readonly")
+
+    def _set_bitrate_ui(self, bitrate):
+        vals = [str(b) for b in BITRATE_CHOICES]
+        if str(bitrate) in vals:
+            self.combo_bitrate.current(vals.index(str(bitrate)))
+        else:
+            self.combo_bitrate.current(2)
+
+    def _persist_stream_settings(self):
+        cfg = load_config()
+        cfg["codec"] = self.codec
+        cfg["bitrate"] = self.bitrate
+        save_config(cfg)
+
+    def _apply_stream_mode(self, changed):
+        """Push the new codec/bitrate to the phone and restart the video stream."""
+        phone = self.phone
+        if not phone:
+            return
+        self._set_status("applying %s change…" % changed)
+
+        def job():
+            try:
+                # Always sync the codec pref too: the phone's restart after a
+                # bitrate change rebuilds its pipeline from the saved codec, so a
+                # mismatched pref would drop the encoded stream entirely.
+                phone.set_codec(self.codec)
+                phone.set_bitrate(self.bitrate)
+                _log("stream mode applied: codec=%s bitrate=%dkbps"
+                     % (self.codec, self.bitrate))
+                self._post_ui(lambda: self._set_status(
+                    "%s changed — reconnecting stream…" % changed))
+                self._post_ui(self._restart_video_only)
+            except Exception as e:
+                _log("apply stream mode failed: %s" % e)
+                self._post_ui(lambda e=e: self._set_status(
+                    "could not apply %s: %s" % (changed, e), error=True))
+        self._cmd_q.put(job)
+
+    def _restart_video_only(self):
+        """Restart the video stream after a codec/bitrate change.
+
+        The phone's pipeline restart (triggered by the bitrate push) takes ~1s —
+        the HTTP server is down for the whole camera reopen, so an immediate
+        reconnect would hit connection-refused or a busy sink. Wait it out like
+        the Restart button does (2500ms), then bring up the new stream.
+        """
+        if self.video:
+            self.video.stop()
+            self.video = None
+        self.latest = None
+        self.latest_id = 0
+        self._set_status("waiting for the phone to apply settings…")
+        self.root.after(2500, self._start_video_stream)
+        self.root.after(4500, self._refresh_aux)
+        if self.vcam_active:
+            self.root.after(5000, self._recreate_vcam_after_restart)
+
     # ---- connection ----------------------------------------------------------
     def _toggle_connect(self):
         if self.connected:
@@ -954,8 +1276,16 @@ class App:
                 info = phone.ping()
                 if not info:
                     raise ConnectionError("no /v1/phone/info response")
-                # start video first so the UI has frames as soon as possible
                 self.phone = phone
+                if self.codec != "jpg":
+                    # Push the chosen codec + bitrate so the phone's encoder runs
+                    # with the client's settings (its saved defaults may differ).
+                    try:
+                        phone.set_codec(self.codec)
+                        phone.set_bitrate(self.bitrate)
+                    except Exception as e:
+                        _log("sync stream settings failed (continuing): %s" % e)
+                # start video first so the UI has frames as soon as possible
                 self._start_streams()
                 self._post_ui(lambda host=host, port=port, info=info:
                               self._connected(host, port, info))
@@ -977,15 +1307,34 @@ class App:
     def _start_streams(self):
         self.latest = None
         self.latest_id = 0
-        self.video = VideoStream(self.phone.host, self.phone.port,
-                                 self._on_frame, self._on_stream_error)
-        self.video.start()
+        self._start_video_stream()
         rate = self.phone.info.get("audioRate", 44100)
         # on_error must hop to the main thread — AudioStream runs on its own thread
         # and _set_status touches tkinter widgets.
         self.audio = AudioStream(self.phone.host, self.phone.port, int(rate),
                                  on_error=lambda m: self._post_ui(lambda: self._set_status(m)))
         self.audio.start()
+
+    def _start_video_stream(self):
+        """Start the video reader for the currently selected codec."""
+        if self.codec != "jpg" and not HAS_AV:
+            _log("H.264/H.265 requested but the 'av' package is missing")
+            self._post_ui(lambda: self._set_status(
+                "%s streaming needs the 'av' package — reinstall the client"
+                % self.codec.upper(), error=True))
+            self._post_ui(self._disconnect)
+            return
+        if self.codec == "jpg":
+            self.video = VideoStream(self.phone.host, self.phone.port,
+                                     self._on_frame, self._on_stream_error)
+        else:
+            info = self.phone.info
+            w = int(info.get("width", 0) or 1280)
+            h = int(info.get("height", 0) or 720)
+            self.video = FramedVideoStream(self.phone.host, self.phone.port,
+                                           self.codec, w, h,
+                                           self._on_frame, self._on_stream_error)
+        self.video.start()
 
     def _update_device_label(self, info):
         """Refresh the header label from a /v1/phone/info response."""
@@ -1000,6 +1349,7 @@ class App:
         self.btn_connect.config(text="Disconnect", state=tk.NORMAL)
         self._update_device_label(info)
         save_config({"host": host, "port": int(port),
+                     "codec": self.codec, "bitrate": self.bitrate,
                      "autoConnect": self.var_auto_connect.get(),
                      "autoVcam": self.var_auto_vcam.get()})
         self._set_status("connected")
@@ -1335,6 +1685,39 @@ def run_selftest():
     found = scan_network(candidates=["127.0.0.1"], port=port, timeout=1.0)
     assert any(f["ip"] == "127.0.0.1" and f["name"] == "MockPhone" for f in found), found
     print("[ok] network scan finds the mock phone -> %s" % found)
+
+    # stream-mode settings sync: codec + bitrate endpoints respond 200
+    st, _ = phone.api("/v1/phone/codec/avc", "PUT")
+    assert st == 200, st
+    st, _ = phone.api("/v1/phone/bitrate/12000", "PUT")
+    assert st == 200, st
+    info2 = phone.ping()
+    assert info2.get("codec") == "avc" and info2.get("bitrate") == 12000, info2
+    print("[ok] /v1/phone/codec + /v1/phone/bitrate sync (codec=%s bitrate=%d)"
+          % (info2.get("codec"), info2.get("bitrate")))
+
+    # framed H.264: the mock encodes real Annex-B with PyAV; the client must
+    # decode it into frames via FramedVideoStream (same path as live streaming)
+    if not HAS_AV:
+        print("[skip] H.264 framed decode — PyAV not installed")
+    else:
+        got = []
+        errs = []
+
+        def on_fr(img):
+            got.append(img)
+
+        fvs = FramedVideoStream("127.0.0.1", port, "avc", 320, 180, on_fr, errs.append)
+        fvs.start()
+        deadline = time.time() + 8.0
+        while time.time() < deadline and len(got) < 3 and not errs:
+            time.sleep(0.1)
+        fvs.stop()
+        fvs.join(timeout=3)
+        assert not errs, errs
+        assert len(got) >= 3, "only %d H.264 frames" % len(got)
+        print("[ok] H.264 framed stream decoded %d frames, size %dx%d"
+              % (len(got), got[0].size[0], got[0].size[1]))
 
     # virtual camera module: detection helpers must load and run headless
     import virtualcam

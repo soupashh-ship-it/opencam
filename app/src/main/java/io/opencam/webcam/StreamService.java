@@ -94,7 +94,9 @@ public class StreamService extends Service implements ControlApi.Host {
     private int cameraIndex;
     private boolean micMuted;
     private boolean torchOn;
-    private boolean usingEncoder;
+    // Written on the main thread, read from HTTP handler threads (setPhoneBitrate,
+    // videoBusy) — must be volatile like pipeline.sink.
+    private volatile boolean usingEncoder;
     private Surface encoderSurface;
 
     private int width;
@@ -720,6 +722,32 @@ public class StreamService extends Service implements ControlApi.Host {
     @Override
     public void onStop() {
         stopStreaming();
+    }
+
+    @Override
+    public void setPhoneCodec(String codec) {
+        if (!codec.equals("jpg") && !codec.equals("avc") && !codec.equals("hevc")) {
+            Logs.e("ignored invalid codec from client: " + codec);
+            return;
+        }
+        Prefs.putString(this, Prefs.CODEC, codec);
+        Logs.i("phone codec set to " + codec + " by client");
+        // The desktop client drives its own stream codec per-connection (its request
+        // URL decides avc/jpg/hevc), so no pipeline restart is needed here — the
+        // pref is updated so the phone's own settings stay in sync with the client.
+    }
+
+    @Override
+    public void setPhoneBitrate(int kbps) {
+        int v = Math.max(100, Math.min(50000, kbps));
+        Prefs.putInt(this, Prefs.BITRATE, v);
+        Logs.i("phone bitrate set to " + v + " kbps by client");
+        // If an encoded stream is live, restart the pipeline so the new bitrate
+        // applies immediately (the still-connected framed client is re-attached to
+        // the fresh encoder, and its decoder re-syncs on the replayed SPS/PPS).
+        if (state == STATE_RUNNING && usingEncoder) {
+            onRestart();
+        }
     }
 
     // ---- helpers --------------------------------------------------------------

@@ -25,7 +25,59 @@ try:
 except ImportError:
     Image = None
 
+try:
+    import av
+    import numpy as np
+    from fractions import Fraction
+    HAS_AV = True
+except ImportError:
+    av = np = Fraction = None
+    HAS_AV = False
+
 BOUNDARY = b"--dcmjpeg"
+
+
+def _make_h264_stream(width=320, height=180, frames=12):
+    """Encode a short real H.264 Annex-B stream with PyAV (self-contained mock).
+    Returns a list of framed packets: [(pts, payload), ...] with the SPS/PPS
+    config first, matching the phone's FramedSink wire format."""
+    if not HAS_AV:
+        return None
+    ctx = av.CodecContext.create("libx264", "w")
+    ctx.width, ctx.height = width, height
+    ctx.pix_fmt = "yuv420p"
+    ctx.time_base = Fraction(1, 30)
+    ctx.framerate = 30
+    ctx.options = {"preset": "ultrafast", "tune": "zerolatency",
+                   "x264-params": "keyint=12"}
+    ctx.open()
+    packets = []  # (pts, bytes) in Annex-B
+    for i in range(frames):
+        rgb = np.zeros((height, width, 3), dtype=np.uint8)
+        rgb[:, :, 0] = (i * 20) % 256
+        rgb[:, :, 1] = 128
+        rgb[:, :, 2] = 255
+        fr = av.VideoFrame.from_ndarray(rgb, format="rgb24").reformat(format="yuv420p")
+        for pkt in ctx.encode(fr):
+            packets.append((pkt.pts or 0, bytes(pkt)))
+    for pkt in ctx.encode(None):
+        packets.append((pkt.pts or 0, bytes(pkt)))
+    # split SPS/PPS (config) from the picture stream — the phone replays the
+    # codec-config buffer first, then access units.
+    config = b""
+    pictures = []
+    for pts, data in packets:
+        nals = [n for n in data.split(b"\x00\x00\x00\x01") if n]
+        is_config = any((n[0] & 0x1f) in (7, 8) for n in nals)
+        if is_config:
+            config += data
+        else:
+            pictures.append((pts, data))
+    out = []
+    if config:
+        out.append((0, config))
+    out.extend(pictures)
+    return out
 
 
 def make_jpeg(seq, width=640, height=360):
@@ -61,6 +113,9 @@ class MockServer(threading.Thread):
         self.wb_mode = 5
         self.wb_level = 50
         self.muted = 0
+        self.codec = "jpg"
+        self.bitrate = 8000
+        self._h264_cache = None
 
     def run(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -111,6 +166,9 @@ class MockServer(threading.Thread):
         if path == "/video":
             self._serve_video(conn)
             return
+        if path.startswith("/v5/video/") or path.startswith("/v4/video/"):
+            self._serve_framed(conn, path)
+            return
         if path == "/v2/audio":
             self._serve_audio(conn)
             return
@@ -133,7 +191,8 @@ class MockServer(threading.Thread):
 
     def _control_response(self, method, path):
         if path == "/v1/phone/info":
-            return json.dumps({"name": "MockPhone", "port": 4748, "codec": "jpg",
+            return json.dumps({"name": "MockPhone", "port": 4748,
+                               "codec": self.codec, "bitrate": self.bitrate,
                                "width": 640, "height": 360, "fps": 30,
                                "audio": 1, "audioRate": 44100, "audioChannels": 1,
                                "audioBitrate": 128, "jpegQuality": 85}).encode()
@@ -187,6 +246,15 @@ class MockServer(threading.Thread):
             except ValueError:
                 pass
             return b""
+        if path.startswith("/v1/phone/codec/"):
+            self.codec = path.rsplit("/", 1)[1]
+            return b""
+        if path.startswith("/v1/phone/bitrate/"):
+            try:
+                self.bitrate = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                pass
+            return b""
         if path == "/v1/camera/mic_toggle":
             self.muted ^= 1
             return b""
@@ -199,6 +267,10 @@ class MockServer(threading.Thread):
 
     # ---- streams -------------------------------------------------------------
     def _serve_video(self, conn):
+        if self.codec != "jpg":
+            # the mock honours the phone's codec setting like the real app
+            self._serve_framed(conn, "/v5/video/" + self.codec + "/640x360")
+            return
         headers = (b"HTTP/1.1 200 OK\r\n"
                    b"Access-Control-Allow-Origin: *\r\n"
                    b"Content-Type: multipart/x-mixed-replace;boundary=dcmjpeg\r\n"
@@ -215,6 +287,35 @@ class MockServer(threading.Thread):
                         + jpeg + b"\r\n")
                 conn.sendall(part)
                 time.sleep(0.05)
+        except OSError:
+            pass
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    def _serve_framed(self, conn, path):
+        """Serve a real H.264/HEVC framed stream: [pts i64][len i32][Annex-B payload]."""
+        if not HAS_AV:
+            conn.sendall(b"HTTP/1.1 503 No PyAV\r\n\r\n")
+            conn.close()
+            return
+        codec = path.split("/")[3].lower() if len(path.split("/")) > 3 else "avc"
+        pkts = self._h264_cache
+        if pkts is None:
+            pkts = _make_h264_stream(320, 180, 18)
+            self._h264_cache = pkts
+        if pkts is None:
+            conn.sendall(b"HTTP/1.1 503 No encoder\r\n\r\n")
+            conn.close()
+            return
+        try:
+            for pts, payload in pkts:
+                hdr = struct.pack("<qi", pts, len(payload))
+                conn.sendall(hdr + payload)
+                time.sleep(0.033)
+            # end-of-stream marker
+            conn.sendall(struct.pack("<qi", -1, -1))
         except OSError:
             pass
         try:

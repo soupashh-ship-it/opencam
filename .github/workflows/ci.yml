@@ -47,7 +47,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: python -m pip install pillow
+        run: python -m pip install pillow av numpy
 
       - name: Compile + self-test against the mock phone
         working-directory: windows-client

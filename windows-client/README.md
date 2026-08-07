@@ -9,8 +9,9 @@ app.
 
 | Feature | How |
 |---|---|
-| Live video preview | `GET /video` (MJPEG), decoded with Pillow, 60 fps-capable |
+| Live video preview | `GET /video` (MJPEG) **or** `GET /v5/video/avc` (H.264) **or** `GET /v5/video/hevc` (H.265) — pick the codec in the top bar |
 | Microphone audio | `GET /v2/audio` (AAC), played through ffplay |
+| Codec + bitrate sync | The client pushes its codec/bitrate choice to the phone (`/v1/phone/codec`, `/v1/phone/bitrate`) so both sides match — H.264/H.265 quality is driven by the **bitrate** selector |
 | Switch camera / torch / mute | `PUT /v1/camera/*` |
 | Zoom, exposure (EV), white balance sliders | `PUT /v3|camera/zoom`, `/v3/camera/ev`, `/v2/camera/wb_level` |
 | Auto-focus trigger | `PUT /v1/camera/autofocus` |
@@ -27,6 +28,8 @@ slider.
 * Python 3.8+ — from <https://www.python.org/downloads/> (tick *Add to PATH*)
 * **Pillow** — `run_client.bat` installs it automatically; or manually
   `python -m pip install pillow`
+* **av (PyAV)** — needed for H.264/H.265 streaming (bundles FFmpeg decode);
+  `python -m pip install av`. MJPEG works without it.
 * **ffmpeg/ffplay** (optional, for audio only) — <https://ffmpeg.org/download.html>
   or `winget install Gyan.FFmpeg`
 * **pyvirtualcam + numpy** (optional, only for the *Virtual cam* feature) —
@@ -44,6 +47,24 @@ client **auto-connects** to the last phone and, if enabled, switches on the **Vi
 cam** — so it's ready for Discord/Zoom as soon as it opens. Both behaviours can be
 toggled with the *Auto-connect* and *Virtual cam on connect* checkboxes in the top
 bar (persisted per machine).
+
+### Choosing the video codec & bitrate
+
+Next to the port field there are two dropdowns:
+
+* **Codec** — `MJPEG` (max compatibility; quality = the phone's JPEG quality
+  setting) or `H.264` / `H.265 / HEVC` (much better quality-per-bit; the phone
+  hardware-encodes and the client decodes with bundled FFmpeg).
+* **Bitrate** (only used by H.264/H.265) — from 2000 to 20000 kbps. Higher =
+  sharper, at the cost of more bandwidth. The client sends its choice to the
+  phone (`/v1/phone/bitrate`), so the encoder really runs at the bitrate you
+  pick — unlike MJPEG where bitrate does nothing.
+
+Changing either while connected re-syncs the phone and reconnects the stream
+automatically. Your choices are remembered for next launch.
+
+> **Tip:** H.264 @ 8–12 Mbps looks dramatically better than MJPEG on the same
+> network, especially at 1080p and above, and uses less bandwidth to boot.
 
 ### Using it as a webcam in OBS
 
@@ -86,16 +107,17 @@ python opencam_client.py --selftest
 ```
 
 Starts a mock phone server on localhost and verifies phone info, camera info,
-control endpoints, and the MJPEG video stream end to end.
+control endpoints, the MJPEG video stream, codec/bitrate sync, **and** a real
+H.264 framed stream (the mock encodes with bundled libx264) end to end.
 
 ## Standalone .exe (no Python required)
 
 Run `build_exe.bat` once to produce a single portable `dist\OpenCamClient.exe`
-(~20 MB) with PyInstaller. The build runs the client's own self-test against a
-mock phone as a final check, so a broken bundle fails the build. Copy the exe to
-any Windows 10/11 machine and double-click it — no Python, Pillow or ffmpeg
-install needed (audio just disables gracefully if ffplay isn't on the target
-machine).
+(~80 MB, PyAV bundles FFmpeg) with PyInstaller. The build runs the client's own
+self-test against a mock phone as a final check, so a broken bundle fails the
+build. Copy the exe to any Windows 10/11 machine and double-click it — no
+Python, Pillow or ffmpeg install needed (audio just disables gracefully if
+ffplay isn't on the target machine).
 
 The exe keeps its remembered IP/port in `opencam_client.json` **next to itself**
 so it stays portable; if that folder isn't writable (e.g. Program Files) it falls
@@ -109,6 +131,6 @@ back to `%APPDATA%\OpenCamClient\`. Notes:
 ## Files
 
 * `opencam_client.py` — the client (GUI + protocol)
-* `mock_server.py` — fake phone used by `--selftest` (also runnable standalone)
+* `mock_server.py` — fake phone used by `--selftest` (also runnable standalone; encodes real H.264 with PyAV)
 * `run_client.bat` — double-click launcher (source mode)
 * `build_exe.bat` — builds the standalone `dist\OpenCamClient.exe`
