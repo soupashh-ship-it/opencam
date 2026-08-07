@@ -1,6 +1,7 @@
 package io.opencam.webcam.video;
 
 import android.content.Context;
+import android.graphics.ImageFormat;
 import android.graphics.Rect;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
@@ -8,11 +9,13 @@ import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.StreamConfigurationMap;
 import android.hardware.camera2.params.RggbChannelVector;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.util.Range;
 import android.util.Rational;
+import android.util.Size;
 import android.view.Surface;
 
 import io.opencam.webcam.util.Logs;
@@ -176,6 +179,48 @@ public class CameraController {
             }
         });
         cameraThread.quitSafely();
+    }
+
+    /**
+     * Pick the closest camera-supported YUV capture size for a requested resolution, so
+     * an unsupported setting (e.g. 4K on a 1080p-max sensor) still applies the best real
+     * size instead of silently leaving the stream at the old resolution. Returns the
+     * request unchanged when the camera can't be queried.
+     */
+    public static int[] pickSupportedSize(CameraManager manager, String cameraId, int w, int h) {
+        try {
+            CameraCharacteristics cc = manager.getCameraCharacteristics(cameraId);
+            StreamConfigurationMap map = cc.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (map == null) {
+                return new int[]{w, h};
+            }
+            Size[] sizes = map.getOutputSizes(ImageFormat.YUV_420_888);
+            if (sizes == null || sizes.length == 0) {
+                sizes = map.getOutputSizes(android.view.SurfaceHolder.class);
+            }
+            if (sizes == null || sizes.length == 0) {
+                return new int[]{w, h};
+            }
+            int target = w * h;
+            float reqRatio = (float) w / h;
+            Size best = sizes[0];
+            double bestScore = Double.MAX_VALUE;
+            for (Size s : sizes) {
+                float ratio = (float) s.getWidth() / s.getHeight();
+                double ratioDelta = Math.abs(ratio - reqRatio);
+                // Aspect ratio dominates, area breaks ties: a 16:9 request never falls
+                // back to a 4:3 size (which would stretch the image) — only sizes with
+                // the same (or near) ratio compete by closeness of resolution.
+                double score = ratioDelta * 1e12 + Math.abs(s.getWidth() * s.getHeight() - target);
+                if (score < bestScore) {
+                    best = s;
+                    bestScore = score;
+                }
+            }
+            return new int[]{best.getWidth(), best.getHeight()};
+        } catch (CameraAccessException | IllegalArgumentException e) {
+            return new int[]{w, h};
+        }
     }
 
     // ---- controls ------------------------------------------------------------

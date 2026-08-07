@@ -67,7 +67,7 @@ public final class Prefs {
     }
 
     public static int jpegQuality(Context c) {
-        return sp(c).getInt(JPEG_QUALITY, 85);
+        return sp(c).getInt(JPEG_QUALITY, 92);
     }
 
     public static void putInt(Context c, String key, int value) {

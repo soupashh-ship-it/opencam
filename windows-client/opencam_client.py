@@ -987,14 +987,18 @@ class App:
                                  on_error=lambda m: self._post_ui(lambda: self._set_status(m)))
         self.audio.start()
 
+    def _update_device_label(self, info):
+        """Refresh the header label from a /v1/phone/info response."""
+        name = info.get("name") or ""
+        self.lbl_device.config(text="%s  ·  %d×%d @%d fps  ·  %s"
+                                % (name, info.get("width", 0), info.get("height", 0),
+                                   info.get("fps", 0), info.get("codec", "?")))
+
     def _connected(self, host, port, info):
         self.connected = True
         _log("connected to %s:%d (info: %s)" % (host, port, info))
         self.btn_connect.config(text="Disconnect", state=tk.NORMAL)
-        name = info.get("name") or host
-        self.lbl_device.config(text="%s  ·  %d×%d @%d fps  ·  %s"
-                                % (name, info.get("width", 0), info.get("height", 0),
-                                   info.get("fps", 0), info.get("codec", "?")))
+        self._update_device_label(info)
         save_config({"host": host, "port": int(port),
                      "autoConnect": self.var_auto_connect.get(),
                      "autoVcam": self.var_auto_vcam.get()})
@@ -1054,6 +1058,18 @@ class App:
             return
         self._run_control(phone.restart,
                          "restart sent — phone re-applies settings (fps/resolution)")
+        # The phone's pipeline restarts asynchronously (camera reopen takes ~1s). Once
+        # frames resume, refresh the header (new resolution/fps) and re-create the
+        # virtual camera at the new size so it isn't stuck on the old one.
+        self.root.after(2500, self._refresh_aux)
+        self.root.after(3500, self._recreate_vcam_after_restart)
+
+    def _recreate_vcam_after_restart(self):
+        if not self.vcam_active:
+            return
+        _log("recreating virtual camera after phone restart")
+        self._vcam_stop()
+        self.root.after(300, self._cmd_vcam)
 
     def _cmd_camera(self):
         phone = self.phone
@@ -1216,6 +1232,11 @@ class App:
                 bat = phone.battery()
                 lvl = bat.get("level", 0)
                 self._post_ui(lambda: self.lbl_battery.config(text="Battery %d%%" % lvl))
+            except Exception:
+                pass
+            try:
+                info = phone.ping()
+                self._post_ui(lambda info=info: self._update_device_label(info))
             except Exception:
                 pass
             try:

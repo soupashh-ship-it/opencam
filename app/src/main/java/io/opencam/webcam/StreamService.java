@@ -331,6 +331,19 @@ public class StreamService extends Service implements ControlApi.Host {
         String codec = Prefs.codec(this);
         boolean encoded = codec.equals("avc") || codec.equals("hevc");
         int bitrate = Prefs.bitrateKbps(this);
+        // The YUV reader surface is always a capture-session target (even in encoded
+        // mode, where the encoder surface joins it) — clamp the requested resolution to
+        // a size the camera actually supports for YUV so the setting applies instead of
+        // being silently ignored or failing the session (e.g. 4K on a 1080p-max sensor).
+        int[] sz = CameraController.pickSupportedSize(
+                (CameraManager) getSystemService(Context.CAMERA_SERVICE),
+                cameraIds[cameraIndex], width, height);
+        if (sz[0] != width || sz[1] != height) {
+            Logs.i("resolution " + width + "x" + height
+                    + " -> " + sz[0] + "x" + sz[1] + " (closest supported)");
+            width = sz[0];
+            height = sz[1];
+        }
         if (encoded) {
             try {
                 pipeline = new VideoEncoderPipeline(
