@@ -187,7 +187,9 @@ def _copy_files():
 
     Always installs into a NEW vN folder keyed by the build fingerprint, so a
     DLL still held by the FrameServer service never blocks an update. Returns
-    the folder used.
+    the folder used. A folder is only REUSED when it contains BOTH files of the
+    current build — a folder with a stale/missing exe (e.g. an interrupted
+    update) is never reused, so start() can't point at a half-installed copy.
     """
     src = bundled_dir()
     base = install_dir()
@@ -195,16 +197,13 @@ def _copy_files():
         os.makedirs(base, exist_ok=True)
     except OSError:
         return None, "cannot create %s" % base
-    fp = _dll_fingerprint()
-    # reuse an existing folder with this exact build if present
+    # reuse an existing folder with this exact build if present (both files)
     try:
         for n in sorted(os.listdir(base), reverse=True):
             if not (n.startswith("v") and n[1:].isdigit()):
                 continue
             d = os.path.join(base, n)
-            p = os.path.join(d, "OpenCamVcamSource.dll")
-            if os.path.isfile(p) and os.path.getsize(p) == \
-                    os.path.getsize(os.path.join(src, "OpenCamVcamSource.dll")):
+            if _build_matches(d, src):
                 return d, None
     except OSError:
         pass
@@ -235,6 +234,18 @@ def _copy_files():
         except OSError as e:
             return None, "cannot copy %s: %s" % (name, e)
     return d, None
+
+
+def _build_matches(d, src):
+    """True if folder `d` holds a complete, current copy of both binaries."""
+    for name in ("OpenCamVcamSource.dll", "opencam-vcam.exe"):
+        p = os.path.join(d, name)
+        if not os.path.isfile(p):
+            return False
+        s = os.path.join(src, name)
+        if not os.path.isfile(s) or os.path.getsize(p) != os.path.getsize(s):
+            return False
+    return True
 
 
 def is_registered():
@@ -519,19 +530,31 @@ class MfVcam:
         if err:
             return err
 
-        # launch the camera host (hidden window, no console)
-        try:
-            flags = 0x08000000  # CREATE_NO_WINDOW
-            self._proc = subprocess.Popen(
-                [exe], creationflags=flags,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as e:
-            self._shm.close()
-            return "cannot launch the virtual camera host: %s" % e
+        # Reap any stale camera hosts from a previous session. Without this a
+        # dead host that never cleared its Local\\OpenCamVcamReady event makes
+        # _camera_live() below return True instantly, so start() "succeeds"
+        # while the actual camera is gone (the black/stuck camera in Discord).
+        # If a REAL camera is already enumerable (another client instance), it
+        # is reused instead — the shared frame buffer feeds the same camera.
+        _reap_stale_hosts()
+
+        if _camera_enumerated():
+            # a live camera exists without us launching a host — feed it
+            self._proc = None
+        else:
+            # launch the camera host (hidden window, no console)
+            try:
+                flags = 0x08000000  # CREATE_NO_WINDOW
+                self._proc = subprocess.Popen(
+                    [exe], creationflags=flags,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as e:
+                self._shm.close()
+                return "cannot launch the virtual camera host: %s" % e
 
         # wait for the camera to appear (the exe creates it right after mapping)
         for _ in range(40):
-            if self._proc.poll() is not None:
+            if self._proc is not None and self._proc.poll() is not None:
                 self._shm.close()
                 self._proc = None
                 return "the virtual camera host exited immediately"
@@ -562,17 +585,20 @@ class MfVcam:
         if self._thread is not None:
             self._thread.join(timeout=2)
             self._thread = None
-        # signal the host to exit cleanly (the exe creates this event), then
-        # kill it if it doesn't go within a couple of seconds
-        try:
-            k32 = _K32().k
-            evt = k32.OpenEventW(0x0002, False, STOP_EVENT_NAME)
-            if evt:
-                k32.SetEvent(evt)
-                k32.CloseHandle(evt)
-        except Exception:
-            pass
+        # If we reused another client instance's live camera (no host of our
+        # own), do NOT signal STOP_EVENT — that would kill the other client's
+        # camera. Just stop feeding the shared buffer.
         if self._proc is not None:
+            # signal the host to exit cleanly (the exe creates this event), then
+            # kill it if it doesn't go within a couple of seconds
+            try:
+                k32 = _K32().k
+                evt = k32.OpenEventW(0x0002, False, STOP_EVENT_NAME)
+                if evt:
+                    k32.SetEvent(evt)
+                    k32.CloseHandle(evt)
+            except Exception:
+                pass
             try:
                 self._proc.wait(timeout=2)
             except Exception:
@@ -645,3 +671,45 @@ def _camera_live():
         return DEVICE_NAME in (r.stderr or "")
     except Exception:
         return False
+
+
+def _camera_enumerated():
+    """True when the OpenCam camera is actually visible to DirectShow apps.
+
+    Used to tell a LIVE camera (owned by this or another client instance) from
+    a stale READY event left behind by a broken/old host. ffmpeg's dshow device
+    list is the same enumeration Discord/OBS use.
+    """
+    try:
+        r = subprocess.run(["ffmpeg", "-hide_banner", "-list_devices", "true",
+                            "-f", "dshow", "-i", "dummy"],
+                           capture_output=True, text=True, timeout=30)
+        return DEVICE_NAME in (r.stderr or "")
+    except Exception:
+        return False
+
+
+def _reap_stale_hosts():
+    """Kill leftover opencam-vcam.exe hosts from previous sessions.
+
+    Only kills processes with OUR exact image name, so OBS Virtual Camera and
+    every other app are untouched — and only when NO camera is actually
+    enumerable. If a real OpenCam camera is already live (e.g. a second client
+    instance owns it), it is left running: the shared frame buffer means this
+    client feeds the same pixels without needing its own host.
+
+    A stale host (previous session that didn't exit cleanly) lingers with its
+    READY event set after its registration was invalidated; without reaping it,
+    _camera_live() would report "live" for a camera that doesn't exist — the
+    classic black/stuck camera in Discord.
+    """
+    if _camera_enumerated():
+        return  # a real camera exists — reuse it, never kill it
+    try:
+        r = subprocess.run(["taskkill", "/F", "/IM", "opencam-vcam.exe"],
+                           capture_output=True, timeout=15)
+        if r.returncode == 0:
+            # give the OS a moment to tear down the PnP device registration
+            time.sleep(1.0)
+    except Exception:
+        pass

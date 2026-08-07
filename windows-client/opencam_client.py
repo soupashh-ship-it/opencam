@@ -877,6 +877,11 @@ class App:
         self.root.after(16, self._tick)  # ~60Hz poll; _tick only redraws on new frames
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(1200, self._vcam_hint)
+        # On MF-capable systems the legacy DirectShow camera instance is a dead
+        # duplicate (black/stuck in Discord). Clean it up quietly at startup so
+        # old installs converge to the single MF camera without a manual toggle.
+        if HAS_VCAM_MF and vcam_mf.supported():
+            self.root.after(2500, self._drop_legacy_dshow)
         if cfg["autoConnect"] and cfg["host"]:
             _log("auto-connect scheduled for %s:%d" % (cfg["host"], cfg["port"]))
             self.root.after(1500, self._auto_connect)
@@ -1692,6 +1697,13 @@ class App:
                     self.vcam = vc
                     _log("MF virtual camera on (backend: MFCreateVirtualCamera)")
                     self._post_ui(lambda: self._vcam_on(w, h))
+                    # The MF camera is a real PnP camera that ALREADY shows up
+                    # in DirectShow apps, so a leftover registration of the old
+                    # DirectShow filter instance would make Discord/WhatsApp
+                    # list TWO "OpenCam Virtual Camera" entries — and the dead
+                    # DirectShow one is black/stuck (nothing feeds it anymore).
+                    # Remove it once so apps see exactly one camera.
+                    self._drop_legacy_dshow()
                     return
                 _log("MF virtual camera failed (%s) — falling back to DirectShow" % err)
             except Exception as e:
@@ -1723,6 +1735,32 @@ class App:
     def _vcam_fail(self, err):
         self.btn_vcam.config(state=tk.NORMAL)
         self._set_status("virtual camera: %s" % err, error=True)
+
+    def _drop_legacy_dshow(self):
+        """Best-effort removal of the old DirectShow camera instance.
+
+        Older OpenCam versions registered a DirectShow filter device named
+        "OpenCam Virtual Camera". Since the MF camera (Win11 22H2+) already
+        appears in DirectShow apps, keeping that registration makes Discord/OBS
+        list the camera twice — and the leftover DirectShow entry is dead (it
+        is no longer fed), so picking it shows a stuck/black picture.
+
+        Runs elevated only when the legacy instance actually exists, and only
+        once per session (the _legacy_drop_done flag) so the startup call and
+        the vcam-start call can't fire two UAC prompts. After a successful
+        removal it stays gone, so later launches never prompt. OBS Virtual
+        Camera and the shared OBS filter are never touched.
+        """
+        if getattr(self, "_legacy_drop_done", False):
+            return
+        self._legacy_drop_done = True
+        try:
+            if virtualcam.registered():
+                _log("removing legacy DirectShow camera instance "
+                     "(duplicate of the MF camera)")
+                threading.Thread(target=virtualcam.unregister, daemon=True).start()
+        except Exception as e:
+            _log("legacy DirectShow cleanup skipped: %s" % e)
 
     def _vcam_stop(self):
         self.vcam_active = False
