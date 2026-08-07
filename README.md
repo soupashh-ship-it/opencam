@@ -56,9 +56,10 @@ publishing to any store).
 
 * **Actions → CI** — on every push to `main` it builds the signed release APK and runs the
   Windows client's self-test against the mock phone.
-* **Actions → Release** — pushing a `v*` tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
-  builds the APK and publishes a GitHub Release with it attached.
-* **Releases** — ready-to-install APKs: <https://github.com/soupashh-ship-it/opencam/releases>
+* **Actions → Release** — pushing a `v*` tag (e.g. `git tag v0.1.1 && git push origin v0.1.1`)
+  builds the signed APK **and** the standalone Windows client exe, then publishes a
+  GitHub Release with both attached.
+* **Releases** — ready-to-install APK + `OpenCamClient.exe`: <https://github.com/soupashh-ship-it/opencam/releases>
 
 ## Usage
 
