@@ -232,6 +232,39 @@ def format_float(v):
     return s.rstrip("0").rstrip(".")
 
 
+def _enable_keepalive(sock, idle_sec=5, interval_sec=2):
+    """Aggressive TCP keepalive so a vanished phone (WiFi blip, sleep) is noticed
+    in seconds instead of hours.
+
+    This is the other half of the reconnect story: when the PC drops off the
+    network without closing, the phone keeps "successfully" writing frames into
+    the dead socket's kernel buffer — its watchdog never sees the client as idle
+    and the sink stays busy. Client-side keepalive detects the dead peer quickly,
+    we close our socket, the phone's next write throws, its sink clears, and the
+    reconnect succeeds. Without it the phone would stay BUSY until the user
+    restarts streaming (the exact bug being fixed).
+    """
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+    except OSError:
+        return
+    # Windows: SIO_KEEPALIVE_VALS (onoff, keepalivetime_ms, keepaliveinterval_ms)
+    try:
+        sock.ioctl(socket.SIO_KEEPALIVE_VALS,
+                   (1, idle_sec * 1000, interval_sec * 1000))
+        return
+    except (OSError, AttributeError, TypeError, struct.error):
+        pass
+    # Linux/macOS
+    for opt in (socket.TCP_KEEPIDLE, socket.TCP_KEEPINTVL, socket.TCP_KEEPCNT):
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, opt,
+                            idle_sec if opt == socket.TCP_KEEPIDLE else
+                            interval_sec if opt == socket.TCP_KEEPINTVL else 3)
+        except (OSError, AttributeError):
+            pass
+
+
 # ============================================================================
 # LAN discovery (no dependencies — probes the local subnets for OpenCam phones)
 # ============================================================================
@@ -352,7 +385,11 @@ class VideoStream(threading.Thread):
     def run(self):
         try:
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
-            self._sock.settimeout(5)
+            # 12s read timeout: long enough to ride out a phone pipeline restart
+            # (camera reopen ~1-3s) or a brief WiFi blip, short enough that a dead
+            # link is noticed reasonably fast (the client auto-reconnects anyway).
+            self._sock.settimeout(12)
+            _enable_keepalive(self._sock)
             self._sock.sendall(b"GET /video HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
                                % (self.host.encode(), self.port))
             reader = _Buffered(self._sock)
@@ -463,7 +500,9 @@ class FramedVideoStream(threading.Thread):
             return
         try:
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
-            self._sock.settimeout(5)
+            # 12s read timeout — see VideoStream.run() for the rationale.
+            self._sock.settimeout(12)
+            _enable_keepalive(self._sock)
             self._sock.sendall(b"GET /v5/video/%s/%dx%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
                                % (self.codec.encode(), self.width, self.height,
                                   self.host.encode(), self.port))
@@ -660,7 +699,9 @@ class AudioStream(threading.Thread):
                 [ffplay, "-nodisp", "-loglevel", "quiet", "-f", "adts", "-i", "-"],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
-            self._sock.settimeout(5)
+            # 12s read timeout — see VideoStream.run() for the rationale.
+            self._sock.settimeout(12)
+            _enable_keepalive(self._sock)
             self._sock.sendall(b"GET /v2/audio HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
                                % (self.host.encode(), self.port))
             # Raw framed stream: no HTTP response headers — the first bytes are
@@ -1407,12 +1448,7 @@ class App:
         self.latest = None
         self.latest_id = 0
         self._start_video_stream()
-        rate = self.phone.info.get("audioRate", 44100)
-        # on_error must hop to the main thread — AudioStream runs on its own thread
-        # and _set_status touches tkinter widgets.
-        self.audio = AudioStream(self.phone.host, self.phone.port, int(rate),
-                                 on_error=lambda m: self._post_ui(lambda: self._set_status(m)))
-        self.audio.start()
+        self._start_audio_stream()
 
     def _start_video_stream(self):
         """Start the video reader for the currently selected codec."""
@@ -1451,6 +1487,7 @@ class App:
 
     def _connected(self, host, port, info):
         self.connected = True
+        self._reconnect_try = 0
         _log("connected to %s:%d (info: %s)" % (host, port, info))
         self.btn_connect.config(text="Disconnect", state=tk.NORMAL)
         self._update_device_label(info)
@@ -1476,6 +1513,8 @@ class App:
 
     def _disconnect(self):
         self.connected = False
+        self._reconnect_try = 0
+        self._reconnect_pending = False
         # cancel any pending debounced slider sends (guarded no-ops anyway)
         for k in list(self._debounce):
             try:
@@ -1653,6 +1692,10 @@ class App:
         self.frame_counter += 1
         self.latest = img
         self.latest_id += 1
+        # frames flowing again means a reconnect succeeded — reset the attempt
+        # counter so a handful of transient drops never exhausts the retry cap
+        if getattr(self, "_reconnect_try", 0):
+            self._reconnect_try = 0
         # feed the registered virtual camera (best effort, non-blocking)
         if self.vcam_active and self.vcam is not None:
             self.vcam.send(img)
@@ -1660,7 +1703,72 @@ class App:
     def _on_stream_error(self, msg):
         _log("stream error: %s" % msg)
         self._post_ui(lambda: self._set_status(msg, error=True))
-        self._post_ui(self._disconnect)
+        # Don't tear the whole connection down on the first blip. A brief phone
+        # pipeline restart, a WiFi hiccup, or a 12s gap is usually transient — the
+        # phone is still streaming and a reconnect succeeds on its own. Only give
+        # up (full disconnect) after several failed attempts.
+        self._post_ui(self._schedule_reconnect)
+
+    def _schedule_reconnect(self):
+        """(Re)start the stream after an error, with backoff and a retry cap.
+
+        Runs on the main thread. Stops the dead stream threads, waits a moment,
+        and re-dials. Keeps the phone session + virtual camera alive across
+        transient drops so the user isn't kicked out to "not connected" by a
+        network hiccup.
+        """
+        if not self.connected or self.phone is None:
+            return
+        # guard against double-scheduling: the video reader thread can error
+        # while a reconnect is already pending (e.g. a second error right after
+        # the first) — only one reconnect may be in flight at a time
+        if getattr(self, "_reconnect_pending", False):
+            _log("reconnect already pending — ignoring duplicate stream error")
+            return
+        n = getattr(self, "_reconnect_try", 0) + 1
+        if n > 4:
+            _log("reconnect attempts exhausted — disconnecting")
+            self._reconnect_try = 0
+            self._disconnect()
+            return
+        self._reconnect_try = n
+        self._reconnect_pending = True
+        _log("stream lost — reconnect attempt %d/4" % n)
+        self._set_status("stream lost — reconnecting (attempt %d/4)…" % n)
+        # stop the old (dead) stream threads so their sockets don't linger
+        if self.video:
+            self.video.stop()
+            self.video = None
+        if self.audio:
+            self.audio.stop()
+            self.audio = None
+        # backoff: 1.5s, 3s, 6s, 12s — gives the phone time to finish a restart
+        # and lets its watchdog reclaim a stuck sink before we retry
+        self.root.after(int(1500 * (2 ** (n - 1))), self._do_reconnect)
+
+    def _do_reconnect(self):
+        """The scheduled reconnect fires: clear the pending guard and restart the
+        streams. The attempt counter is NOT reset here — it resets in _on_frame
+        when frames actually flow again, so a genuinely-dead phone still exhausts
+        the cap and gives up (instead of looping forever), while a phone that
+        recovered resets the counter so later transient drops start from 1 again."""
+        self._reconnect_pending = False
+        if not self.connected or self.phone is None:
+            return
+        _log("reconnect firing — restarting streams")
+        self._start_streams()
+
+    def _start_audio_stream(self):
+        """(Re)start only the audio stream for the current phone session."""
+        if not self.connected or self.phone is None:
+            return
+        if self.audio:
+            self.audio.stop()
+            self.audio = None
+        rate = self.phone.info.get("audioRate", 44100)
+        self.audio = AudioStream(self.phone.host, self.phone.port, int(rate),
+                                 on_error=lambda m: self._post_ui(lambda: self._set_status(m)))
+        self.audio.start()
 
     # ---- periodic UI work -------------------------------------------------------
     def _tick(self):

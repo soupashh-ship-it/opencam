@@ -21,6 +21,11 @@ import java.nio.ByteBuffer;
 public class AudioStream {
 
     private volatile FrameSink sink;
+
+    /** Wall-clock time (ms) of the last successful write to the sink (watchdog uses
+     *  it to reclaim clients whose socket died silently). */
+    public volatile long lastWriteMs;
+
     private AudioRecord recorder;
     private MediaCodec codec;
     private Thread thread;
@@ -40,6 +45,7 @@ public class AudioStream {
 
     public void attachSink(FrameSink s) {
         sink = s;
+        lastWriteMs = System.currentTimeMillis();
     }
 
     /** True while an audio client is attached. */
@@ -166,6 +172,7 @@ public class AudioStream {
                     if (s != null && size > 0 && output != null) {
                         try {
                             s.writeFrame(info.presentationTimeUs, aac, size);
+                            lastWriteMs = System.currentTimeMillis();
                         } catch (IOException e) {
                             s.close();
                             if (sink == s) {

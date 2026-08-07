@@ -27,6 +27,12 @@ public abstract class MjpegProducer {
     /** The currently attached client sink; null when nobody is watching. */
     public volatile FrameSink sink;
 
+    /** Wall-clock time (ms) of the last successful frame write to the sink. Used by
+     *  the service's watchdog to reclaim clients whose socket died silently — the
+     *  only other way to notice is a failed write, which never happens if frames
+     *  have stopped (half-open TCP, stalled camera). */
+    public volatile long lastWriteMs;
+
     private final HandlerThread encodeThread;
     private final Handler encodeHandler;
 
@@ -67,6 +73,7 @@ public abstract class MjpegProducer {
         }
         try {
             s.writeFrame(System.nanoTime() / 1000L, jpeg, len);
+            lastWriteMs = System.currentTimeMillis();
         } catch (IOException e) {
             s.close();
             // Only clear if we still own the sink — a newer client may have attached

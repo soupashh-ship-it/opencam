@@ -34,6 +34,10 @@ public class VideoEncoderPipeline {
     /** The client currently receiving encoded frames; null when nobody is attached. */
     public volatile FrameSink sink;
 
+    /** Wall-clock time (ms) of the last successful write to the sink (watchdog uses
+     *  it to reclaim clients whose socket died silently — see MjpegProducer). */
+    public volatile long lastWriteMs;
+
     /** Last codec-config buffer (SPS/PPS), replayed to each new client. */
     private volatile byte[] lastConfig;
 
@@ -80,6 +84,7 @@ public class VideoEncoderPipeline {
     /** Attach (or replace) the client sink, replaying the cached codec config first. */
     public void attachSink(FrameSink s) {
         sink = s;
+        lastWriteMs = System.currentTimeMillis();
         byte[] config = lastConfig;
         if (config != null && s != null) {
             try {
@@ -169,6 +174,7 @@ public class VideoEncoderPipeline {
                 if (s != null) {
                     try {
                         s.writeFrame(info.presentationTimeUs, outBuf, size);
+                        lastWriteMs = System.currentTimeMillis();
                     } catch (IOException e) {
                         s.close();
                         if (sink == s) {

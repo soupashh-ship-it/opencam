@@ -65,6 +65,13 @@ public class HttpServer extends Thread {
     }
 
     private void handleConnection(final Socket socket) {
+        try {
+            // Half-open TCP detection: if the PC vanishes (WiFi blip, sleep) without
+            // closing, keepalive makes the stack probe the peer so a later write fails
+            // instead of buffering forever — the sink then clears and frees the slot.
+            socket.setKeepAlive(true);
+        } catch (IOException ignored) {
+        }
         new Thread(new Runnable() {
             @Override
             public void run() {

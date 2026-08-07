@@ -110,6 +110,30 @@ public class StreamService extends Service implements ControlApi.Host {
 
     private static final String CHANNEL_ID = "stream";
 
+    /**
+     * A client whose socket produces no successful write for this long is treated
+     * as dead and its sink is reclaimed so a fresh client can connect without the
+     * user having to stop/restart streaming.
+     *
+     * <p>Background: a dropped PC connection is only noticed when the next frame
+     * write throws. If frames stop at the same time (camera stalled, or the write
+     * keeps "succeeding" into the dead socket's buffer — half-open TCP after a
+     * WiFi blip / PC sleep), the sink stays attached forever and every reconnect
+     * gets BUSY until streaming is restarted. The watchdog closes that gap.
+     */
+    private static final long CLIENT_IDLE_TIMEOUT_MS = 12000;
+    private static final long WATCHDOG_PERIOD_MS = 4000;
+    private final Runnable clientWatchdog = new Runnable() {
+        @Override
+        public void run() {
+            if (state != STATE_RUNNING) {
+                return;
+            }
+            reclaimIdleClients();
+            main.postDelayed(this, WATCHDOG_PERIOD_MS);
+        }
+    };
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -286,6 +310,8 @@ public class StreamService extends Service implements ControlApi.Host {
         }
         startServer();
         startDiscovery();
+        main.removeCallbacks(clientWatchdog);
+        main.postDelayed(clientWatchdog, WATCHDOG_PERIOD_MS);
     }
 
     private void doStop() {
@@ -316,6 +342,7 @@ public class StreamService extends Service implements ControlApi.Host {
         }
         usingEncoder = false;
         encoderSurface = null;
+        main.removeCallbacks(clientWatchdog);
         releaseLocks();
         stopForeground(true);
         setState(STATE_STOPPED);
@@ -448,6 +475,65 @@ public class StreamService extends Service implements ControlApi.Host {
         }
     }
 
+    /**
+     * Drop any attached client that hasn't received a frame in a while. The phone
+     * normally only notices a dead client on the next failed write; this covers the
+     * silent cases (stalled camera, half-open TCP) so the busy slot frees up and a
+     * new client can connect without restarting streaming.
+     */
+    private void reclaimIdleClients() {
+        long now = System.currentTimeMillis();
+        FrameSink idle = null;
+        if (usingEncoder) {
+            FrameSink s = pipeline != null ? pipeline.sink : null;
+            if (s != null && now - pipeline.lastWriteMs > CLIENT_IDLE_TIMEOUT_MS) {
+                Logs.i("watchdog: dropping idle encoded video client (no frame for "
+                        + (now - pipeline.lastWriteMs) + "ms)");
+                idle = s;
+            }
+        } else {
+            FrameSink s = mjpeg != null ? mjpeg.sink : null;
+            if (s != null && now - mjpeg.lastWriteMs > CLIENT_IDLE_TIMEOUT_MS) {
+                Logs.i("watchdog: dropping idle MJPEG client (no frame for "
+                        + (now - mjpeg.lastWriteMs) + "ms)");
+                idle = s;
+            }
+        }
+        if (idle != null) {
+            dropVideoClient(idle);
+        }
+        if (audio != null && audio.hasClient()
+                && now - audio.lastWriteMs > CLIENT_IDLE_TIMEOUT_MS) {
+            Logs.i("watchdog: dropping idle audio client");
+            FrameSink a = audioSink;
+            audioSink = null;
+            audio.attachSink(null);
+            if (a != null) {
+                a.close();
+            }
+        }
+    }
+
+    /**
+     * Close + detach the exact client the watchdog identified as idle. Only
+     * clears the producer's reference if it still points at that same sink — a
+     * new client attaching between the idle-check and this call must never be
+     * dropped (the producers use the same identity pattern on write failure).
+     */
+    private void dropVideoClient(FrameSink v) {
+        if (usingEncoder) {
+            if (pipeline != null && pipeline.sink == v) {
+                pipeline.attachSink(null);
+            }
+        } else if (mjpeg != null && mjpeg.sink == v) {
+            mjpeg.sink = null;
+        }
+        if (videoSink == v) {
+            videoSink = null;
+        }
+        v.close();
+    }
+
     private void detachSinks() {
         FrameSink v = videoSink;
         if (v != null) {
@@ -578,7 +664,10 @@ public class StreamService extends Service implements ControlApi.Host {
             ensureCodec(spec.codec);
             if (spec.codec.equals("jpg")) {
                 if (mjpeg != null) {
+                    // stamp the attach time — the watchdog uses lastWriteMs to
+                    // detect dead clients and must not see a brand-new sink as idle
                     mjpeg.sink = sink;
+                    mjpeg.lastWriteMs = System.currentTimeMillis();
                 }
             } else if (pipeline != null) {
                 pipeline.attachSink(sink);
@@ -602,6 +691,9 @@ public class StreamService extends Service implements ControlApi.Host {
             audioSink = sink;
             ensureAudio();
             audio.attachSink(micMuted ? null : sink);
+            if (audio != null) {
+                audio.lastWriteMs = System.currentTimeMillis();
+            }
             Logs.i("audio client connected");
             return true;
         } catch (IOException e) {
@@ -721,11 +813,13 @@ public class StreamService extends Service implements ControlApi.Host {
                         }
                     } else if (mjpeg != null) {
                         mjpeg.sink = v;
+                        mjpeg.lastWriteMs = System.currentTimeMillis();
                         videoSink = v;
                     }
                 }
                 if (a != null && audio != null) {
                     audio.attachSink(micMuted ? null : a);
+                    audio.lastWriteMs = System.currentTimeMillis();
                     audioSink = a;
                 }
                 startServer();
