@@ -13,6 +13,7 @@ app.
 | Microphone audio | `GET /v2/audio` (AAC), played through ffplay |
 | Codec + quality sync | The client pushes its codec/quality choice to the phone (`/v1/phone/codec`, `/v1/phone/bitrate`, `/v1/phone/jpeg_quality`) so both sides match — quality is driven by the **Quality** preset or the **Bitrate**/JPEG quality selector |
 | Switch camera / torch / mute | `PUT /v1/camera/*` |
+| Rotate / mirror | Manual **Rotate** (0/90/180/270°) + **Mirror** buttons fix a sideways picture when the phone is held in landscape (applies to the preview and the virtual camera) |
 | Zoom, exposure (EV), white balance sliders | `PUT /v3|camera/zoom`, `/v3/camera/ev`, `/v2/camera/wb_level` |
 | Auto-focus trigger | `PUT /v1/camera/autofocus` |
 | Battery + device info | `GET /v1/phone/*` |

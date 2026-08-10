@@ -130,7 +130,7 @@ class MockServer(threading.Thread):
                 conn, _ = self._sock.accept()
             except OSError:
                 break
-            threading.Thread(target=self._handle, args=(conn,), daemon=True).start()
+            threading.Thread(target=self._serve_connection, args=(conn,), daemon=True).start()
 
     def stop(self):
         self._running = False
@@ -141,7 +141,10 @@ class MockServer(threading.Thread):
                 pass
 
     # ---- request handling ---------------------------------------------------
-    def _handle(self, conn):
+    # NB: named _serve_connection, NOT _handle — threading.Thread.start() sets an
+    # instance attribute `_handle` on Python 3.13+ (a joinable-thread handle), which
+    # would shadow a method named _handle and crash every handler thread.
+    def _serve_connection(self, conn):
         try:
             conn.settimeout(5)
             data = b""

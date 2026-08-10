@@ -103,6 +103,25 @@ QUALITY_PRESETS = [
 ]
 
 
+def apply_transform(img, rotation_deg, mirrored):
+    """Rotate (clockwise) and/or mirror a PIL frame for display and the virtual camera.
+
+    The phone streams frames in its own sensor orientation, so holding the phone in
+    landscape produces a sideways picture on the PC. This manual rotate control (plus
+    an optional mirror) fixes the preview and the vcam feed without touching the phone.
+    """
+    r = int(rotation_deg) % 360
+    if r == 90:
+        img = img.transpose(Image.ROTATE_270)   # 90° clockwise
+    elif r == 180:
+        img = img.transpose(Image.ROTATE_180)
+    elif r == 270:
+        img = img.transpose(Image.ROTATE_90)    # 270° clockwise
+    if mirrored:
+        img = img.transpose(Image.FLIP_LEFT_RIGHT)
+    return img
+
+
 def _log(msg):
     """Append a timestamped line to opencam_client.log (best effort)."""
     try:
@@ -813,12 +832,15 @@ def load_config():
                 "qualityPreset": cfg.get("qualityPreset", "High"),
                 "autoConnect": bool(cfg.get("autoConnect", True)),
                 "autoVcam": bool(cfg.get("autoVcam", True)),
+                "rotation": int(cfg.get("rotation", 0) or 0) % 360,
+                "mirror": bool(cfg.get("mirror", False)),
             }
     except Exception:
         return {"host": "", "port": DEFAULT_PORT,
                 "codec": "avc", "bitrate": DEFAULT_BITRATE,
                 "jpegQuality": DEFAULT_JPEG_QUALITY, "qualityPreset": "High",
-                "autoConnect": True, "autoVcam": True}
+                "autoConnect": True, "autoVcam": True,
+                "rotation": 0, "mirror": False}
 
 
 def save_config(cfg):
@@ -856,6 +878,8 @@ class App:
         self._debounce = {}
         self.vcam = None              # virtualcam.VirtualCam while streaming to it
         self.vcam_active = False
+        self.rotation = 0             # clockwise degrees applied to preview + vcam
+        self.mirrored = False
 
         # Cross-thread plumbing: tkinter must only be touched on the main thread.
         # Threads push lambdas onto _ui_q (drained in _tick); control calls run on
@@ -877,6 +901,8 @@ class App:
         self.codec = cfg["codec"] if cfg["codec"] in ("jpg", "avc", "hevc") else "avc"
         self.bitrate = cfg["bitrate"]
         self.jpeg_quality = cfg["jpegQuality"]
+        self.rotation = int(cfg.get("rotation", 0) or 0) % 360
+        self.mirrored = bool(cfg.get("mirror", False))
         self._set_codec_ui(self.codec)
         self._set_bitrate_ui(self.bitrate)
         self._set_quality_ui(cfg["qualityPreset"])
@@ -1092,6 +1118,12 @@ class App:
         self.btn_mute = self._add_button(row1, "Mute mic", self._cmd_mute)
         self.btn_af = self._add_button(row1, "Auto-focus", self._cmd_af)
         self.btn_vcam = self._add_button(row1, "Virtual cam", self._cmd_vcam)
+        self.btn_rotate = self._add_button(row1, "Rotate: 0°", self._cmd_rotate)
+        self.btn_mirror = self._add_button(row1, "Mirror: OFF", self._cmd_mirror)
+        if self.rotation:
+            self.btn_rotate.config(text="Rotate: %d°" % self.rotation)
+        if self.mirrored:
+            self.btn_mirror.config(text="Mirror: ON")
 
         self.row2 = tk.Frame(ctrl, bg=BG)
         self.row2.pack(fill=tk.X, pady=(8, 0))
@@ -1560,7 +1592,8 @@ class App:
                      "jpegQuality": self.jpeg_quality,
                      "qualityPreset": self.combo_quality.get() or "Custom",
                      "autoConnect": self.var_auto_connect.get(),
-                     "autoVcam": self.var_auto_vcam.get()})
+                     "autoVcam": self.var_auto_vcam.get(),
+                     "rotation": self.rotation, "mirror": self.mirrored})
         self._set_status("connected")
         self._last_aux = 0.0
         self._refresh_aux()
@@ -1674,6 +1707,41 @@ class App:
         if phone:
             self._run_control(phone.autofocus)
 
+    def _cmd_rotate(self):
+        """Cycle the clockwise rotation 0/90/180/270° for preview + virtual camera."""
+        old = self.rotation
+        self.rotation = (self.rotation + 90) % 360
+        self.btn_rotate.config(text="Rotate: %d°" % self.rotation)
+        self._persist_view()
+        # Only 90/270 swap the frame dimensions — the vcam must be recreated at the
+        # rotated size then, and only then (0<->180 keeps the same dims, so the vcam
+        # can keep running while the preview transforms in place).
+        dims_changed = (old in (90, 270)) != (self.rotation in (90, 270))
+        if self.vcam_active and dims_changed:
+            self._restart_vcam()
+        self._set_status("rotation %d° (hold the phone as you like)" % self.rotation)
+
+    def _cmd_mirror(self):
+        self.mirrored = not self.mirrored
+        self.btn_mirror.config(text="Mirror: ON" if self.mirrored else "Mirror: OFF")
+        self._persist_view()
+        self._set_status("mirror %s" % ("on" if self.mirrored else "off"))
+
+    def _persist_view(self):
+        cfg = load_config()
+        cfg["rotation"] = self.rotation
+        cfg["mirror"] = self.mirrored
+        save_config(cfg)
+
+    def _restart_vcam(self):
+        """Recreate the virtual camera at the currently rotated size."""
+        if not self.vcam_active:
+            return
+        self._vcam_stop()
+        self.btn_vcam.config(state=tk.DISABLED)
+        self._set_status("recreating virtual camera…")
+        threading.Thread(target=self._vcam_start_worker, daemon=True).start()
+
     # ---- virtual camera ------------------------------------------------------
     def _cmd_vcam(self):
         if self.vcam_active:
@@ -1697,6 +1765,8 @@ class App:
         iw, ih = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
         if 320 <= iw <= 1920 and 320 <= ih <= 1920:
             w, h = iw, ih
+        if self.rotation in (90, 270):
+            w, h = h, w  # rotated feed has swapped dimensions
         fps = max(1, min(60, int(info.get("fps", 30) or 30)))
 
         # Preferred backend: the Media Foundation virtual camera (Win11 22H2+).
@@ -1792,6 +1862,9 @@ class App:
     # ---- stream callbacks (called from reader threads) -------------------------
     def _on_frame(self, img):
         self.frame_counter += 1
+        # Apply the user's rotate/mirror once here so the preview AND the virtual
+        # camera both show the corrected picture.
+        img = apply_transform(img, self.rotation, self.mirrored)
         self.latest = img
         self.latest_id += 1
         # frames flowing again means a reconnect succeeded — reset the attempt
@@ -2090,6 +2163,16 @@ def run_selftest():
     assert virtualcam.DEVICE_NAME == "OpenCam Virtual Camera"
     print("[ok] virtual camera module loads (filter registered: %s)"
           % virtualcam.filter_registered())
+
+    # rotate/mirror transform used by the preview + virtual camera
+    t = Image.new("RGB", (100, 60))
+    assert apply_transform(t, 0, False).size == (100, 60)
+    assert apply_transform(t, 90, False).size == (60, 100)
+    assert apply_transform(t, 180, False).size == (100, 60)
+    assert apply_transform(t, 270, True).size == (60, 100)
+    assert apply_transform(t, 0, True).getpixel((5, 5)) == \
+        t.transpose(Image.FLIP_LEFT_RIGHT).getpixel((5, 5))
+    print("[ok] rotate/mirror transform (0/90/180/270 + mirror)")
 
     # audio framing: the mock sends 3 fake framed packets; the client's
     # AudioStream parser is exercised by the mock server's /v2/audio endpoint
