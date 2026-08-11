@@ -407,7 +407,18 @@ def prepare():
 # ============================================================================
 
 class VirtualCam:
-    """Writes frames to the registered virtual camera via pyvirtualcam."""
+    """Writes frames to the registered virtual camera via pyvirtualcam.
+
+    The pyvirtualcam/OBS shared-memory backend can BLOCK in send() when the
+    consumer (Discord/OBS/…) stops reading fast enough (full ring buffer). If
+    that write ran on the caller's thread it would stall whoever calls send()
+    — and opencam_client calls it from the video reader thread, so a slow
+    consumer would freeze the preview and let frames pile up behind the
+    phone's 12s idle watchdog (the ~15s stale-video symptom). Like the MF
+    backend, the write therefore runs on a background feeder thread with
+    latest-wins semantics: send() only records the newest frame and returns
+    immediately.
+    """
 
     def __init__(self, width, height, fps):
         self.width = int(width)
@@ -415,6 +426,11 @@ class VirtualCam:
         self.fps = float(fps)
         self.cam = None
         self._lock = threading.Lock()
+        self._latest = None
+        self._latest_id = 0
+        self._sent_id = -1
+        self._halt = threading.Event()
+        self._thread = None
 
     def start(self):
         if not HAS_PYVCAM:
@@ -425,23 +441,54 @@ class VirtualCam:
             self.cam = pyvirtualcam.Camera(
                 width=self.width, height=self.height, fps=self.fps,
                 fmt=pyvirtualcam.PixelFormat.RGB)
+        # Reset feed state so a reused instance starts with an empty "latest"
+        # slot instead of skipping the first frame (stale _sent_id from a
+        # previous session).
+        self._latest = None
+        self._latest_id = 0
+        self._sent_id = -1
+        self._halt.clear()
+        self._thread = threading.Thread(target=self._feeder, daemon=True)
+        self._thread.start()
 
     def send(self, pil_img):
-        cam = self.cam
-        if cam is None or pil_img is None:
+        """Hand the newest frame to the feeder (latest-wins, non-blocking)."""
+        if pil_img is None or self._halt.is_set():
             return
-        try:
-            img = pil_img
-            if img.size != (self.width, self.height):
-                img = img.resize((self.width, self.height), Image.LANCZOS)
-            arr = np.asarray(img)
-            if arr.shape != (self.height, self.width, 3):
-                arr = np.asarray(img.convert("RGB")).reshape(self.height, self.width, 3)
-            cam.send(arr)
-        except Exception:  # noqa: BLE001 — consumer not reading etc.; keep streaming
-            pass
+        with self._lock:
+            self._latest = pil_img
+            self._latest_id += 1
+
+    def _feeder(self):
+        """Background thread: resize/convert the newest frame and write it."""
+        while not self._halt.is_set():
+            with self._lock:
+                img = self._latest
+                fid = self._latest_id
+            if img is None or fid == self._sent_id:
+                time.sleep(0.001)
+                continue
+            try:
+                if img.size != (self.width, self.height):
+                    # BILINEAR: per-frame LANCZOS rescale is needlessly slow for
+                    # a virtual-camera feed (matches the MF backend's choice).
+                    img = img.resize((self.width, self.height), Image.BILINEAR)
+                arr = np.asarray(img)
+                if arr.shape != (self.height, self.width, 3):
+                    arr = np.asarray(img.convert("RGB")).reshape(self.height, self.width, 3)
+                # May block here while a slow consumer catches up — that is fine
+                # on this thread; the video reader is never affected.
+                self.cam.send(arr)
+                self._sent_id = fid
+            except Exception:  # noqa: BLE001 — consumer not reading etc.; keep streaming
+                time.sleep(0.05)
+            time.sleep(0.001)
 
     def stop(self):
+        self._halt.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+            self._thread = None
         with self._lock:
             if self.cam is not None:
                 try:

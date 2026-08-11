@@ -70,6 +70,11 @@ public class HttpServer extends Thread {
             // closing, keepalive makes the stack probe the peer so a later write fails
             // instead of buffering forever — the sink then clears and frees the slot.
             socket.setKeepAlive(true);
+            // Nagle would hold the tiny per-frame protocol headers (the MJPEG
+            // multipart prefix, the framed 12-byte packet header) in the kernel for
+            // up to an RTT, adding latency to every single frame. Stream sockets
+            // must never delay the first byte.
+            socket.setTcpNoDelay(true);
         } catch (IOException ignored) {
         }
         new Thread(new Runnable() {

@@ -79,7 +79,7 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     _BASE_DIR = os.path.join(os.environ.get("APPDATA", _BASE_DIR), "OpenCamClient")
     os.makedirs(_BASE_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 DEFAULT_PORT = 4747
 DEFAULT_BITRATE = 8000  # kbps, used for the encoded (H.264/H.265) stream modes
 BOUNDARY = b"--dcmjpeg"
@@ -130,6 +130,19 @@ def _log(msg):
             f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "  " + str(msg) + "\n")
     except Exception:
         pass
+
+
+def _no_window_flags():
+    """Subprocess creationflags that hide child console windows on Windows.
+
+    ffplay (and anything else we launch) is a console-subsystem executable; without
+    CREATE_NO_WINDOW every launch flashes a CMD window on the user's screen. The
+    reconnect loop restarts the audio stream (and thus re-runs ffplay discovery)
+    on every video drop, so this popping up "non-stop" was a real complaint.
+    """
+    if sys.platform == "win32":
+        return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return 0
 
 
 # ============================================================================
@@ -275,6 +288,14 @@ def _enable_keepalive(sock, idle_sec=5, interval_sec=2):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
     except OSError:
         return
+    # Disable Nagle: the MJPEG/framed protocols write small per-frame headers
+    # (12-byte packet header, ~50-byte multipart prefix). With Nagle on, a small
+    # write can sit in the kernel waiting for an ACK, adding an RTT of latency to
+    # every frame — exactly the "movement lags by seconds" feel.
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass
     # Windows: SIO_KEEPALIVE_VALS (onoff, keepalivetime_ms, keepaliveinterval_ms)
     try:
         sock.ioctl(socket.SIO_KEEPALIVE_VALS,
@@ -729,7 +750,11 @@ class AudioStream(threading.Thread):
     def find_ffplay():
         for name in ("ffplay", "ffplay.exe"):
             try:
-                subprocess.run([name, "-version"], capture_output=True, timeout=5)
+                # CREATE_NO_WINDOW: discovery runs on every audio (re)start, and
+                # reconnects restart audio — without it each check flashes a CMD
+                # window, which users saw popping up repeatedly while reconnecting.
+                subprocess.run([name, "-version"], capture_output=True, timeout=5,
+                               creationflags=_no_window_flags())
                 return name
             except Exception:
                 continue
@@ -744,7 +769,8 @@ class AudioStream(threading.Thread):
         try:
             self._proc = subprocess.Popen(
                 [ffplay, "-nodisp", "-loglevel", "quiet", "-f", "adts", "-i", "-"],
-                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=_no_window_flags())
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
             # 12s read timeout — see VideoStream.run() for the rationale.
             self._sock.settimeout(12)
@@ -1500,17 +1526,43 @@ class App:
                 self.phone = phone
                 # Push the chosen quality settings so the phone's encoder/producer
                 # runs with the client's values (its saved defaults may differ).
+                # NB: the phone restarts its whole pipeline (HTTP server included)
+                # when the bitrate/JPEG-quality actually changes, so opening the
+                # video stream immediately after would hit connection-refused and
+                # start a reconnect loop (and every loop cycle re-flashed ffplay's
+                # console window). Only push real changes and wait for the phone's
+                # server to come back before starting the streams.
+                need_wait = False
                 try:
                     # Sync the codec pref in BOTH modes: a leftover avc/hevc pref
                     # would make the phone build an encoder pipeline when a jpg
                     # quality change triggers its restart, while we stream MJPEG.
                     phone.set_codec(self.codec)
                     if self.codec == "jpg":
-                        phone.set_jpeg_quality(self.jpeg_quality)
+                        cur = info.get("jpegQuality")
+                        try:
+                            cur = int(cur) if cur is not None else 0
+                        except (TypeError, ValueError):
+                            cur = 0
+                        if cur != self.jpeg_quality:
+                            phone.set_jpeg_quality(self.jpeg_quality)
+                            need_wait = True
                     else:
-                        phone.set_bitrate(self.bitrate)
+                        cur = info.get("bitrate")
+                        try:
+                            cur = int(cur) if cur is not None else 0
+                        except (TypeError, ValueError):
+                            cur = 0
+                        if cur != self.bitrate:
+                            phone.set_bitrate(self.bitrate)
+                            need_wait = True
                 except Exception as e:
                     _log("sync stream settings failed (continuing): %s" % e)
+                if need_wait:
+                    # The phone's pipeline restart takes ~1-3s and drops its HTTP
+                    # server for that window; poll until it answers again.
+                    _log("stream settings pushed — waiting for the phone to apply them")
+                    self._wait_for_phone(phone)
                 # The user may have disconnected while this worker dialed (auto-
                 # connect + manual Disconnect) — abort before starting streams or
                 # flipping state back to connected.
@@ -1561,11 +1613,26 @@ class App:
                 self._post_ui(lambda e=e: self._connect_failed(str(e)))
                 return
 
+    def _wait_for_phone(self, phone, timeout=8.0):
+        """Block until the phone's HTTP server answers again (post-restart)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                if phone.ping(timeout=1.0):
+                    return
+            except Exception:
+                pass
+            time.sleep(0.3)
+
     def _start_streams(self):
         self.latest = None
         self.latest_id = 0
         self._start_video_stream()
-        self._start_audio_stream()
+        # Only (re)start audio when it isn't already running — a video-only
+        # reconnect must not tear down and respawn the audio pipeline (which
+        # interrupts the mic stream and re-flashes ffplay's console window).
+        if not (self.audio and self.audio.is_alive()):
+            self._start_audio_stream()
 
     def _start_video_stream(self):
         """Start the video reader for the currently selected codec."""

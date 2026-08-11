@@ -989,6 +989,13 @@ public class StreamService extends Service implements ControlApi.Host {
     @Override
     public void setPhoneBitrate(int kbps) {
         int v = Math.max(100, Math.min(50000, kbps));
+        if (v == Prefs.bitrateKbps(this)) {
+            // The desktop client re-syncs its settings on every connect; an
+            // unchanged value must not restart the pipeline — the restart drops
+            // the HTTP server for ~1-3s and races the client's own stream connect
+            // (connection-refused + reconnect churn on every single connect).
+            return;
+        }
         Prefs.putInt(this, Prefs.BITRATE, v);
         Logs.i("phone bitrate set to " + v + " kbps by client");
         // If an encoded stream is live, restart the pipeline so the new bitrate
@@ -1002,6 +1009,11 @@ public class StreamService extends Service implements ControlApi.Host {
     @Override
     public void setPhoneJpegQuality(int quality) {
         int v = Math.max(50, Math.min(100, quality));
+        if (v == Prefs.jpegQuality(this)) {
+            // See setPhoneBitrate: the client re-syncs on every connect and an
+            // unchanged value must not trigger a pipeline restart.
+            return;
+        }
         Prefs.putInt(this, Prefs.JPEG_QUALITY, v);
         Logs.i("phone jpeg quality set to " + v + " by client");
         // Restart only the MJPEG path — the JPEG producer reads the quality at
