@@ -79,7 +79,7 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     _BASE_DIR = os.path.join(os.environ.get("APPDATA", _BASE_DIR), "OpenCamClient")
     os.makedirs(_BASE_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 DEFAULT_PORT = 4747
 DEFAULT_BITRATE = 8000  # kbps, used for the encoded (H.264/H.265) stream modes
 BOUNDARY = b"--dcmjpeg"

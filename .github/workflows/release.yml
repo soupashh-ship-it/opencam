@@ -93,4 +93,4 @@ jobs:
           files: |
             artifacts/apk/*.apk
             artifacts/exe/OpenCamClient.exe
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
