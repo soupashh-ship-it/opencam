@@ -19,7 +19,8 @@ if %errorlevel%==0 (
 %PY% -m pip install --upgrade pyinstaller pillow pyvirtualcam numpy av
 
 %PY% -m PyInstaller --noconfirm --clean --onefile --windowed ^
-    --name OpenCamClient --add-data "vcam;vcam" --collect-all av opencam_client.py
+    --name OpenCamClient --add-data "vcam;vcam" --add-data "vcam_mf;vcam_mf" ^
+    --collect-all av opencam_client.py
 
 if errorlevel 1 (
     echo.

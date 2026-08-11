@@ -738,21 +738,55 @@ public class StreamService extends Service implements ControlApi.Host {
             }
             sink.open(socket);
             videoSink = sink;
-            ensureCodec(spec.codec);
-            if (spec.codec.equals("jpg")) {
-                if (mjpeg != null) {
-                    // stamp the attach time — the watchdog uses lastWriteMs to
-                    // detect dead clients and must not see a brand-new sink as idle
-                    mjpeg.sink = sink;
-                    mjpeg.lastWriteMs = System.currentTimeMillis();
+            try {
+                ensureCodec(spec.codec);
+                boolean attached = false;
+                if (spec.codec.equals("jpg")) {
+                    if (mjpeg != null) {
+                        // stamp the attach time — the watchdog uses lastWriteMs to
+                        // detect dead clients and must not see a brand-new sink as idle
+                        mjpeg.sink = sink;
+                        mjpeg.lastWriteMs = System.currentTimeMillis();
+                        attached = true;
+                    }
+                } else if (pipeline != null) {
+                    pipeline.attachSink(sink);
+                    attached = true;
                 }
-            } else if (pipeline != null) {
-                pipeline.attachSink(sink);
+                if (!attached) {
+                    // An encoded stream was requested but no encoder is available (e.g.
+                    // ensureCodec fell back silently on a device without H.264/H.265).
+                    // Never accept a client we can't feed — its socket would sit open
+                    // forever (the watchdog only reclaims producer-attached sinks) and
+                    // the "connected" promise would be a lie. Close it and refuse.
+                    Logs.i("video client rejected: no producer for " + spec.codec);
+                    if (videoSink == sink) {
+                        videoSink = null;
+                    }
+                    sink.close();
+                    return false;
+                }
+            } catch (RuntimeException e) {
+                // A session reconfiguration (ensureCodec -> camera.setStreamOutputs)
+                // can throw unchecked on a busy/closed HAL. Don't let it escape with
+                // the sink half-attached and videoSink pointing at an orphan.
+                Logs.e("video client setup failed", e);
+                if (videoSink == sink) {
+                    videoSink = null;
+                }
+                sink.close();
+                return false;
             }
             Logs.i("video client connected: " + spec);
             return true;
         } catch (IOException e) {
             Logs.e("video client failed", e);
+            // The sink owns the socket after open(); if open() itself threw, close
+            // the socket here so a half-initialized connection doesn't linger.
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+            }
             return false;
         }
     }
@@ -893,18 +927,39 @@ public class StreamService extends Service implements ControlApi.Host {
                             pipeline.attachSink(v);
                             videoSink = v;
                         } else {
+                            // No encoder after the restart — the framed client can't
+                            // be fed. Close its socket and clear the slot instead of
+                            // leaving an orphan connection (the watchdog never sees
+                            // it because it isn't producer-attached).
                             Logs.i("framed client dropped after restart — no encoder available");
+                            videoSink = null;
+                            v.close();
                         }
                     } else if (mjpeg != null) {
                         mjpeg.sink = v;
                         mjpeg.lastWriteMs = System.currentTimeMillis();
                         videoSink = v;
+                    } else {
+                        // MJPEG/Legacy client but no producer (e.g. restarting into
+                        // encoded mode with no mjpeg reader) — close it too.
+                        Logs.i("video client dropped after restart — no producer available");
+                        videoSink = null;
+                        v.close();
                     }
                 }
-                if (a != null && audio != null) {
-                    audio.attachSink(micMuted ? null : a);
-                    audio.lastWriteMs = System.currentTimeMillis();
-                    audioSink = a;
+                if (a != null) {
+                    if (audio != null) {
+                        audio.attachSink(micMuted ? null : a);
+                        audio.lastWriteMs = System.currentTimeMillis();
+                        audioSink = a;
+                    } else {
+                        // No audio stream after the restart (AAC unavailable on this
+                        // device) — close the client's socket instead of leaving it
+                        // orphaned and wedging the audio slot.
+                        Logs.i("audio client dropped after restart — no audio stream available");
+                        audioSink = null;
+                        a.close();
+                    }
                 }
                 startServer();
                 updateNotification();

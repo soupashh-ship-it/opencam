@@ -1,0 +1,30 @@
+v1.0.2: deep-audit fix batch — camera/device leaks, orphan sockets, crash guards, MF vcam packaging
+
+Android (io.opencam.webcam):
+- CameraController: per-open StateCallback that captures its own camera id —
+  a stale open completing after a fast switch is now closed instead of leaking
+  the CameraDevice (hardware stays busy for other apps) or clobbering the
+  session of the camera that actually won the race
+- StreamService.startVideoClient: reject (close sink + socket) when the
+  requested codec has no producer (e.g. avc requested but no encoder) instead
+  of "connecting" a client that can never receive a frame and leaking its
+  socket forever; close the socket if sink.open() throws; safety-net
+  RuntimeException from session reconfig
+- StreamService.onRestart: close framed clients that can't be re-attached after
+  a restart (previously orphaned sockets); same for audio clients when no audio
+  stream survived the restart
+- Prefs: drop unused import
+
+Windows client:
+- _start_video_stream: guard against phone=None/not-connected — a scheduled
+  restart firing after disconnect previously crashed on None.phone.host
+- _connected/_connect_worker: ignore a connect that finishes after a disconnect
+  (auto-connect + manual Disconnect race could flip state back to connected)
+- FramedVideoStream: drain-then-signal EOF so a full queue can never lose the
+  marker (blocking the demuxer) or block the UI thread on disconnect
+- VERSION constant shown in the window title
+- virtualcam: fix invalid-escape SyntaxWarnings in the generated .bat (output
+  bytes unchanged)
+- build_exe.bat + release workflow: bundle vcam_mf/ (MF virtual camera DLL +
+  host exe) — packaged exes previously fell back to DirectShow because the MF
+  binaries were never added to the PyInstaller bundle

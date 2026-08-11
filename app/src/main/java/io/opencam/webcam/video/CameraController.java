@@ -481,7 +481,72 @@ public class CameraController {
 
     private void openCamera(final String id) {
         try {
-            manager.openCamera(id, stateCallback, handler);
+            // A fresh callback per open that captures its own id: a stale open
+            // (issued before a restart/switch) can complete AFTER the replacement
+            // was requested, and the shared callback could never tell which open a
+            // late callback belonged to. The captured id comparison closes every
+            // interleaving — a leftover device is closed instead of leaking the
+            // hardware or clobbering the session of the camera that won the race.
+            CameraDevice.StateCallback cb = new CameraDevice.StateCallback() {
+                private final String openId = id;
+
+                @Override
+                public void onOpened(CameraDevice device) {
+                    if (closing) {
+                        // Teardown began while this open was in flight; don't build
+                        // a session with surfaces that may already be closed.
+                        device.close();
+                        return;
+                    }
+                    if (!openId.equals(cameraId) || camera != null) {
+                        // Superseded by a newer open, or another device already
+                        // owns the slot — never leak or clobber.
+                        Logs.i("stale camera open ignored (superseded) — closing leftover device");
+                        device.close();
+                        return;
+                    }
+                    camera = device;
+                    createSessionLocked();
+                }
+
+                @Override
+                public void onDisconnected(CameraDevice device) {
+                    if (closing) {
+                        return; // shutdown in progress; the service already owns teardown
+                    }
+                    if (!openId.equals(cameraId) || camera != device) {
+                        // Stale callback for a superseded open — don't tear down
+                        // the current (newer) camera for an old one.
+                        device.close();
+                        return;
+                    }
+                    device.close();
+                    camera = null;
+                    running = false;
+                    if (listener != null) {
+                        listener.onError("Camera disconnected");
+                    }
+                }
+
+                @Override
+                public void onError(CameraDevice device, int error) {
+                    if (closing) {
+                        return; // shutdown in progress; the service already owns teardown
+                    }
+                    if (!openId.equals(cameraId) || camera != device) {
+                        // Stale callback for a superseded open — same reasoning as onDisconnected.
+                        device.close();
+                        return;
+                    }
+                    device.close();
+                    camera = null;
+                    running = false;
+                    if (listener != null) {
+                        listener.onError("Camera error " + error);
+                    }
+                }
+            };
+            manager.openCamera(id, cb, handler);
         } catch (CameraAccessException e) {
             // Some HALs briefly report CAMERA_IN_USE / MAX_CAMERAS_IN_USE right after a
             // close (e.g. during a fast camera switch). Retry a couple of times first.
@@ -505,45 +570,6 @@ public class CameraController {
         }
     }
 
-    private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
-        @Override
-        public void onOpened(CameraDevice device) {
-            if (closing) {
-                // Teardown began while this open was in flight; don't build a session
-                // with surfaces that may already be closed.
-                device.close();
-                return;
-            }
-            camera = device;
-            createSessionLocked();
-        }
-
-        @Override
-        public void onDisconnected(CameraDevice device) {
-            if (closing) {
-                return; // shutdown in progress; the service already owns teardown
-            }
-            device.close();
-            camera = null;
-            running = false;
-            if (listener != null) {
-                listener.onError("Camera disconnected");
-            }
-        }
-
-        @Override
-        public void onError(CameraDevice device, int error) {
-            if (closing) {
-                return; // shutdown in progress; the service already owns teardown
-            }
-            device.close();
-            camera = null;
-            running = false;
-            if (listener != null) {
-                listener.onError("Camera error " + error);
-            }
-        }
-    };
 
     private void createSessionLocked() {
         if (camera == null) {

@@ -32,7 +32,7 @@ Windows has TWO camera enumerations:
   vidcap) — used by Store-packaged apps like WhatsApp Desktop. On modern
   Windows this enumeration only surfaces **kernel-streaming (KS) cameras**
   (physical webcams and driver-backed virtual cameras like DroidCam's, which
-  installs a ``ROOT\MEDIA`` kernel driver). DirectShow-only software devices are
+  installs a ``ROOT\\MEDIA`` kernel driver). DirectShow-only software devices are
   not listed — this is why neither "OpenCam Virtual Camera" nor "OBS Virtual
   Camera" appears in WhatsApp's camera picker while DroidCam's does.
 
@@ -352,7 +352,7 @@ reg add "HKLM\\SOFTWARE\\WOW6432Node\\Classes\\CLSID\\%CAT%\\Instance\\%INST%" /
 reg add "HKLM\\SOFTWARE\\WOW6432Node\\Classes\\CLSID\\%CAT%\\Instance\\%INST%" /v FriendlyName /t REG_SZ /d "%DEVICE_NAME%" /f >nul
 rem Mirror the FilterData blob from the filter's own OBS registration so our
 rem instance matches the reference entry byte-for-byte (pin/media-type data).
-powershell -NoProfile -Command "$s='HKLM:\SOFTWARE\Classes\CLSID\%CAT%\Instance\%FILTER%'; $d='HKLM:\SOFTWARE\Classes\CLSID\%CAT%\Instance\%INST%'; $fd=(Get-ItemProperty -Path $s -ErrorAction SilentlyContinue).FilterData; if($fd){Set-ItemProperty -Path $d -Name FilterData -Value $fd -Type Binary}; $s='HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID\%CAT%\Instance\%FILTER%'; $d='HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID\%CAT%\Instance\%INST%'; $fd=(Get-ItemProperty -Path $s -ErrorAction SilentlyContinue).FilterData; if($fd){Set-ItemProperty -Path $d -Name FilterData -Value $fd -Type Binary}"
+powershell -NoProfile -Command "$s='HKLM:\\SOFTWARE\\Classes\\CLSID\\%CAT%\\Instance\\%FILTER%'; $d='HKLM:\\SOFTWARE\\Classes\\CLSID\\%CAT%\\Instance\\%INST%'; $fd=(Get-ItemProperty -Path $s -ErrorAction SilentlyContinue).FilterData; if($fd){Set-ItemProperty -Path $d -Name FilterData -Value $fd -Type Binary}; $s='HKLM:\\SOFTWARE\\WOW6432Node\\Classes\\CLSID\\%CAT%\\Instance\\%FILTER%'; $d='HKLM:\\SOFTWARE\\WOW6432Node\\Classes\\CLSID\\%CAT%\\Instance\\%INST%'; $fd=(Get-ItemProperty -Path $s -ErrorAction SilentlyContinue).FilterData; if($fd){Set-ItemProperty -Path $d -Name FilterData -Value $fd -Type Binary}"
 echo done.
 exit /b 0
 """.replace("%DEVICE_NAME%", DEVICE_NAME)

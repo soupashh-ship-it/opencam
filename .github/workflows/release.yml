@@ -54,7 +54,7 @@ jobs:
 
       - name: Build standalone exe
         working-directory: windows-client
-        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name OpenCamClient --add-data "vcam;vcam" --collect-all av opencam_client.py
+        run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name OpenCamClient --add-data "vcam;vcam" --add-data "vcam_mf;vcam_mf" --collect-all av opencam_client.py
 
       - name: Self-test the exe against the mock phone
         working-directory: windows-client

@@ -2,7 +2,6 @@ package io.opencam.webcam;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.preference.PreferenceManager;
 
 /** All persisted settings, with sensible defaults. */
 public final class Prefs {

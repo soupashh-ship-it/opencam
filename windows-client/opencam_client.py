@@ -79,6 +79,7 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     _BASE_DIR = os.path.join(os.environ.get("APPDATA", _BASE_DIR), "OpenCamClient")
     os.makedirs(_BASE_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
+VERSION = "1.0.2"
 DEFAULT_PORT = 4747
 DEFAULT_BITRATE = 8000  # kbps, used for the encoded (H.264/H.265) stream modes
 BOUNDARY = b"--dcmjpeg"
@@ -513,9 +514,24 @@ class FramedVideoStream(threading.Thread):
                 self._sock.close()
             except OSError:
                 pass
-        # wake the demuxer feed so the run loop can exit
+        # wake the demuxer feed so the run loop can exit (never block on a full
+        # queue — that would freeze the caller, which is the UI thread on disconnect)
+        self._signal_eof()
+
+    def _signal_eof(self):
+        """Reliably hand the demuxer its EOF marker.
+
+        Drains first: a full queue would drop the put_nowait(None) and leave
+        _AnnexBFeed.read() blocked on q.get() forever, so the decode loop could
+        never observe the halt flag. After draining, the EOF always lands.
+        """
         try:
-            self._q.put(None)
+            while True:
+                self._q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self._q.put_nowait(None)
         except Exception:
             pass
 
@@ -624,7 +640,7 @@ class FramedVideoStream(threading.Thread):
         except Exception:
             pass
         finally:
-            self._q.put(None)  # EOF for the demuxer feed
+            self._signal_eof()  # EOF for the demuxer feed
 
 
 class _AnnexBFeed:
@@ -854,7 +870,7 @@ def save_config(cfg):
 class App:
     def __init__(self, root):
         self.root = root
-        root.title("OpenCam Client")
+        root.title("OpenCam Client v%s" % VERSION)
         root.configure(bg=BG)
         root.geometry("1000x640")
         root.minsize(760, 480)
@@ -1495,6 +1511,12 @@ class App:
                         phone.set_bitrate(self.bitrate)
                 except Exception as e:
                     _log("sync stream settings failed (continuing): %s" % e)
+                # The user may have disconnected while this worker dialed (auto-
+                # connect + manual Disconnect) — abort before starting streams or
+                # flipping state back to connected.
+                if not self._connect_inflight:
+                    _log("connect aborted: disconnect happened mid-flight")
+                    return
                 # start video first so the UI has frames as soon as possible
                 self._start_streams()
                 self._post_ui(lambda host=host, port=port, info=info:
@@ -1547,6 +1569,11 @@ class App:
 
     def _start_video_stream(self):
         """Start the video reader for the currently selected codec."""
+        if not self.connected or self.phone is None:
+            # A scheduled restart (codec/bitrate change, phone restart) fired after
+            # the user disconnected — never touch a dead phone reference.
+            _log("video start skipped: not connected")
+            return
         if self.codec != "jpg" and not HAS_AV:
             _log("H.264/H.265 requested but the 'av' package is missing — falling back to MJPEG")
             msg = ("%s decoder component missing — using MJPEG instead" % self.codec.upper()) if getattr(
@@ -1581,6 +1608,11 @@ class App:
                                    info.get("fps", 0), codec.upper(), quality_txt))
 
     def _connected(self, host, port, info):
+        if not self._connect_inflight:
+            # The user disconnected (or a new connect started) while the connect
+            # worker was still dialing — never flip us back to "connected".
+            _log("connect finished after disconnect — ignoring")
+            return
         self.connected = True
         self._connect_inflight = False
         self._reconnect_try = 0
