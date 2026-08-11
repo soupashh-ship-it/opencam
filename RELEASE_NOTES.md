@@ -1,5 +1,26 @@
 # OpenCam Release Notes
 
+## v1.1.2 (2026-08-11)
+
+Latency release — eliminates the "video plays seconds behind, then jumps forward, then lags again" cycles by removing every place a frame backlog can build on either side of the connection.
+
+### Windows client
+- **Fixed: MJPEG video fell seconds behind real time (then jumped forward).** JPEG decoding ran on the socket-read thread — at ~90ms per 720p frame that's slower than the phone's ~37ms frame interval, so the TCP buffer built an ever-growing backlog. The MJPEG path now mirrors the H.264 design: a reader thread parses frames off the socket as fast as possible into a bounded latest-wins queue (max 2 frames), and a separate loop decodes them. Lag is now bounded at ~2 frames (~20–50ms measured against a timestamped mock stream) instead of growing without bound.
+- **Fixed: H.264/H.265 decode backlog.** The frame queue could hold up to 128 packets (~4s of video) before dropping one. It now stays at ≤2 packets, so the decoder always works through the freshest frames; with the phone's 1s keyframe interval any dropped-packet chain re-syncs in under a second.
+- **Faster failure detection: stream read timeouts 12s → 5s** (video, encoded video, and audio). A dead link is now noticed and reconnected in ~5s instead of ~12s.
+- **Faster recovery: reconnect backoff 1.5s→3s→6s→12s → 1s→2s→3s→4s.** A transient blip now costs ~5s of frozen video instead of ~15s.
+
+### Android app
+- **Fixed: MJPEG encode backlog on the phone.** The JPEG producer now keeps at most one encode in flight — frames that arrive while an encode is pending are drained and dropped so the newest image is always what gets delivered. A slow encode or a saturated client socket can no longer make the phone's frame backlog grow.
+- **Faster H.264 re-sync: keyframe (IDR) interval 2s → 1s.** After any packet drop or reconnect the decoder recovers on the next keyframe — worst case halved from 2s to 1s.
+- **Faster stale-sink reclaim: client idle watchdog 12s → 5s** (checked every 2s). A stalled session is freed in ~5–7s instead of ~12–16s.
+
+### Validation
+- MJPEG end-to-end lag measured against a timestamped mock phone: **avg ~21ms, max ~143ms** (was ~4.5s+ growing) — real-time.
+- Windows client self-test passes 12/12; Android app compiles clean (both run as gates in the release pipeline).
+
+---
+
 ## v1.1.1 (2026-08-11)
 
 Hotfix release — fixes the connection failures reported between the Android app and the Windows client (blank screen on connect, endless CMD popups, 15s+ stale video).

@@ -79,7 +79,7 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     _BASE_DIR = os.path.join(os.environ.get("APPDATA", _BASE_DIR), "OpenCamClient")
     os.makedirs(_BASE_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
-VERSION = "1.1.1"
+VERSION = "1.1.2"
 DEFAULT_PORT = 4747
 DEFAULT_BITRATE = 8000  # kbps, used for the encoded (H.264/H.265) stream modes
 BOUNDARY = b"--dcmjpeg"
@@ -433,10 +433,11 @@ class VideoStream(threading.Thread):
     def run(self):
         try:
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
-            # 12s read timeout: long enough to ride out a phone pipeline restart
+            # 5s read timeout: long enough to ride out a phone pipeline restart
             # (camera reopen ~1-3s) or a brief WiFi blip, short enough that a dead
-            # link is noticed reasonably fast (the client auto-reconnects anyway).
-            self._sock.settimeout(12)
+            # link is noticed and reconnected in ~5s instead of ~12s (a 12s gap is
+            # exactly the "stale picture that jumps forward" feel).
+            self._sock.settimeout(5)
             _enable_keepalive(self._sock)
             self._sock.sendall(b"GET /video HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
                                % (self.host.encode(), self.port))
@@ -464,6 +465,39 @@ class VideoStream(threading.Thread):
                     self.on_error("unexpected response from the phone's stream endpoint "
                                   "(another client may be connected)")
                 return
+            # Decoding must NOT run on the socket-read thread. Image.load() takes
+            # ~50-90ms on a 720p JPEG while the phone sends a frame every ~37ms
+            # (27fps), so an inline decode would let the TCP receive buffer build
+            # a seconds-long backlog and the picture would fall behind real time
+            # (the "plays delayed, then jumps forward" symptom). Split it like the
+            # H.264 path: a reader thread parses multipart frames and queues the
+            # raw payloads (latest-wins, capped at 2), a decode loop consumes them.
+            q = queue.Queue(maxsize=2)
+            threading.Thread(target=self._read_loop, args=(reader, q),
+                             daemon=True).start()
+            while not self._halt.is_set():
+                try:
+                    data = q.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if data is None:
+                    break
+                img = Image.open(io.BytesIO(data))
+                img.load()
+                self.on_frame(img)
+        except ConnectionError:
+            if not self._halt.is_set():
+                self.on_error("video stream ended")
+        except OSError as e:
+            if not self._halt.is_set():
+                self.on_error("video stream error: %s" % e)
+        except Exception as e:  # noqa: BLE001 — report anything, keep the client alive
+            if not self._halt.is_set():
+                self.on_error("video stream error: %s" % e)
+
+    def _read_loop(self, reader, q):
+        """Parse MJPEG multipart frames and queue the raw payloads (latest-wins)."""
+        try:
             while not self._halt.is_set():
                 # boundary line
                 line = reader.read_until(b"\r\n")
@@ -485,18 +519,30 @@ class VideoStream(threading.Thread):
                     reader.read_until(b"\r\n")  # trailing CRLF
                 except ConnectionError:
                     pass
-                img = Image.open(io.BytesIO(data))
-                img.load()
-                self.on_frame(img)
-        except ConnectionError:
-            if not self._halt.is_set():
-                self.on_error("video stream ended")
-        except OSError as e:
-            if not self._halt.is_set():
-                self.on_error("video stream error: %s" % e)
-        except Exception as e:  # noqa: BLE001 — report anything, keep the client alive
-            if not self._halt.is_set():
-                self.on_error("video stream error: %s" % e)
+                # Latest-wins: if the decoder is busy, drop the oldest queued
+                # frame so decode lag stays bounded at ~2 frames instead of
+                # growing without bound while the socket stays drained.
+                while q.full():
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        break
+                q.put(data)
+        except (ConnectionError, OSError):
+            pass
+        except Exception:
+            pass
+        finally:
+            # EOF for the decode loop (drain first — a full queue would block put)
+            try:
+                while True:
+                    q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
 
 
 class FramedVideoStream(threading.Thread):
@@ -563,8 +609,8 @@ class FramedVideoStream(threading.Thread):
             return
         try:
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
-            # 12s read timeout — see VideoStream.run() for the rationale.
-            self._sock.settimeout(12)
+            # 5s read timeout — see VideoStream.run() for the rationale.
+            self._sock.settimeout(5)
             _enable_keepalive(self._sock)
             self._sock.sendall(b"GET /v5/video/%s/%dx%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
                                % (self.codec.encode(), self.width, self.height,
@@ -650,11 +696,17 @@ class FramedVideoStream(threading.Thread):
                     break
                 if self._halt.is_set():
                     break
-                if self._q.full():
+                # Keep the queue tiny — drop old packets whenever the decoder lags.
+                # A big backlog is exactly the "video plays seconds behind, then
+                # jumps forward" feel: the decoder would always be working through
+                # stale packets. ~2 packets bounds the decode lag to ~2 frames, and
+                # with the phone's 1s IDR interval a dropped P-frame chain re-syncs
+                # in under a second.
+                while self._q.qsize() >= 2:
                     try:
                         self._q.get_nowait()
                     except queue.Empty:
-                        pass
+                        break
                 self._q.put(payload)
         except OSError:
             pass
@@ -772,8 +824,8 @@ class AudioStream(threading.Thread):
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 creationflags=_no_window_flags())
             self._sock = socket.create_connection((self.host, self.port), timeout=10)
-            # 12s read timeout — see VideoStream.run() for the rationale.
-            self._sock.settimeout(12)
+            # 5s read timeout — see VideoStream.run() for the rationale.
+            self._sock.settimeout(5)
             _enable_keepalive(self._sock)
             self._sock.sendall(b"GET /v2/audio HTTP/1.1\r\nHost: %s:%d\r\n\r\n"
                                % (self.host.encode(), self.port))
@@ -2016,9 +2068,10 @@ class App:
         if self.audio:
             self.audio.stop()
             self.audio = None
-        # backoff: 1.5s, 3s, 6s, 12s — gives the phone time to finish a restart
-        # and lets its watchdog reclaim a stuck sink before we retry
-        self.root.after(int(1500 * (2 ** (n - 1))), self._do_reconnect)
+        # backoff: 1s, 2s, 3s, 4s — the phone's 5s idle watchdog reclaims a stuck
+        # sink quickly, so retries can be fast: a transient hiccup now costs ~5s of
+        # frozen video instead of ~15s ("stale picture that jumps forward" cycles).
+        self.root.after(int(1000 * n), self._do_reconnect)
 
     def _do_reconnect(self):
         """The scheduled reconnect fires: clear the pending guard and restart the

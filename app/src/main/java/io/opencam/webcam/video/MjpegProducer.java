@@ -33,6 +33,13 @@ public abstract class MjpegProducer {
      *  have stopped (half-open TCP, stalled camera). */
     public volatile long lastWriteMs;
 
+    /**
+     * True while an encode is queued on the encode thread. Only touched on the encode
+     * thread's looper (the ImageReader listener is delivered there), so no locking.
+     * See {@link #attach(Handler)} for the latest-wins delivery contract.
+     */
+    private boolean encodeQueued;
+
     private final HandlerThread encodeThread;
     private final Handler encodeHandler;
 
@@ -60,15 +67,50 @@ public abstract class MjpegProducer {
     /**
      * Register the frame callback. Runs on this producer's dedicated encode thread so the
      * camera thread never blocks on JPEG compression. (cameraHandler kept for API stability.)
+     *
+     * <p><b>Latest-wins delivery:</b> at most ONE encode is queued at a time. Frames that
+     * arrive while an encode is pending are drained and dropped (the pending encode
+     * acquires the newest image). Without this, a slow encode — or a saturated client
+     * socket that blocks the delivery write — would let the frame backlog grow without
+     * bound: the camera keeps producing while the encoder/socket falls further behind,
+     * which is exactly the "video plays seconds behind, then jumps forward" behaviour.
+     * Bounding the pipeline keeps the delivered frame the freshest one available.
      */
     public void attach(Handler cameraHandler) {
         reader.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
             @Override
             public void onImageAvailable(ImageReader r) {
-                MjpegProducer.this.onImageAvailable(r);
+                if (encodeQueued) {
+                    // An encode is already pending — drain this image so the camera
+                    // HAL never stalls, and let the pending encode grab the newest.
+                    Image img = null;
+                    try {
+                        img = r.acquireLatestImage();
+                    } catch (Exception ignored) {
+                    } finally {
+                        if (img != null) {
+                            img.close();
+                        }
+                    }
+                    return;
+                }
+                encodeQueued = true;
+                encodeHandler.post(encodeTask);
             }
         }, encodeHandler);
     }
+
+    private final Runnable encodeTask = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                MjpegProducer.this.onImageAvailable(reader);
+            } catch (Exception ignored) {
+            } finally {
+                encodeQueued = false;
+            }
+        }
+    };
 
     protected abstract void onImageAvailable(ImageReader reader);
 

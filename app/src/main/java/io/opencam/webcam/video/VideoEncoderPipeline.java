@@ -62,7 +62,11 @@ public class VideoEncoderPipeline {
         format.setInteger(MediaFormat.KEY_HEIGHT, height);
         format.setInteger(MediaFormat.KEY_BIT_RATE, bitrateKbps * 1000);
         format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
-        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
+        // IDR every 1s instead of 2s: a client that dropped packets (WiFi blip,
+        // decode hiccup, reconnect) re-syncs its decoder on the next keyframe. At
+        // 2s every drop cost up to 2s of frozen picture before the jump forward;
+        // 1s halves the worst case (a keyframe is only ~100KB at 8Mbps — negligible).
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         // Low-latency streaming profile. By default many SoC H.264 encoders
@@ -109,7 +113,7 @@ public class VideoEncoderPipeline {
                 plain.setInteger(MediaFormat.KEY_HEIGHT, height);
                 plain.setInteger(MediaFormat.KEY_BIT_RATE, bitrateKbps * 1000);
                 plain.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
-                plain.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2);
+                plain.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
                 plain.setInteger(MediaFormat.KEY_COLOR_FORMAT,
                         MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
                 codec.configure(plain, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);

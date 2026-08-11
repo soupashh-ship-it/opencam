@@ -126,8 +126,12 @@ public class StreamService extends Service implements ControlApi.Host {
      * WiFi blip / PC sleep), the sink stays attached forever and every reconnect
      * gets BUSY until streaming is restarted. The watchdog closes that gap.
      */
-    private static final long CLIENT_IDLE_TIMEOUT_MS = 12000;
-    private static final long WATCHDOG_PERIOD_MS = 4000;
+    // 5s idle timeout (was 12s): a client that stopped receiving frames is
+    // reclaimed and its slot freed in ~5-7s instead of ~12-16s. Combined with the
+    // client's 5s read timeout + 1-4s reconnect backoff, a stalled session now
+    // recovers in ~5s instead of the ~15s "stale picture that jumps forward" cycle.
+    private static final long CLIENT_IDLE_TIMEOUT_MS = 5000;
+    private static final long WATCHDOG_PERIOD_MS = 2000;
     private final Runnable clientWatchdog = new Runnable() {
         @Override
         public void run() {
