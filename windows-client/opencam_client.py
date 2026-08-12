@@ -34,9 +34,17 @@ import tkinter as tk
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from tkinter import font as tkfont
 from tkinter import ttk
 
 if sys.platform == "win32":
+    try:
+        import ctypes
+        # High-DPI awareness (before any Tk window is created) so the UI renders
+        # crisp instead of blurry-scaled on scaled displays.
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        pass
     try:
         import ctypes
         ctypes.windll.winmm.timeBeginPeriod(1)
@@ -79,7 +87,7 @@ if getattr(sys, "frozen", False) and not os.access(_BASE_DIR, os.W_OK):
     _BASE_DIR = os.path.join(os.environ.get("APPDATA", _BASE_DIR), "OpenCamClient")
     os.makedirs(_BASE_DIR, exist_ok=True)
     CONFIG_FILE = os.path.join(_BASE_DIR, "opencam_client.json")
-VERSION = "1.1.2"
+VERSION = "1.2.0"
 DEFAULT_PORT = 4747
 DEFAULT_BITRATE = 8000  # kbps, used for the encoded (H.264/H.265) stream modes
 BOUNDARY = b"--dcmjpeg"
@@ -485,6 +493,13 @@ class VideoStream(threading.Thread):
                 img = Image.open(io.BytesIO(data))
                 img.load()
                 self.on_frame(img)
+            # The reader only signals EOF when the socket died or the phone closed
+            # it (e.g. its idle watchdog reclaimed the slot, or the phone restarted
+            # mid-stream). An MJPEG stream never ends on its own, so a clean EOF
+            # while still connected is a failure — surface it so the reconnect
+            # logic runs instead of sitting on a black screen with no fps counter.
+            if not self._halt.is_set():
+                self.on_error("video stream ended")
         except ConnectionError:
             if not self._halt.is_set():
                 self.on_error("video stream ended")
@@ -634,6 +649,28 @@ class FramedVideoStream(threading.Thread):
             # decode loop below can block on the feed without stalling the socket.
             reader = threading.Thread(target=self._read_loop, daemon=True)
             reader.start()
+            # A stream that keeps delivering bytes but never yields a decodable
+            # picture (wrong codec on the wire, unsupported profile, garbage data)
+            # would sit on a black screen forever with "connected": av.open() (which
+            # waits for SPS/PPS) or decode() would just block pulling more input, so
+            # no exception ever surfaces. A watchdog tracks decode progress and
+            # force-closes the socket (EOF for the demuxer) so the code below exits
+            # and reports loudly instead. Started BEFORE av.open — opening can itself
+            # block forever on a stream that never yields a valid header.
+            last_decode = [time.time()]
+            watchdog_fired = [False]
+
+            def _decode_watchdog():
+                while not self._halt.wait(1.0):
+                    if time.time() - last_decode[0] > 6.0:
+                        watchdog_fired[0] = True
+                        try:
+                            self._sock.close()
+                        except OSError:
+                            pass
+                        return
+
+            threading.Thread(target=_decode_watchdog, daemon=True).start()
             feed = _AnnexBFeed(self._q)
             try:
                 container = av.open(feed, format=self.fmt, mode="r")
@@ -645,6 +682,7 @@ class FramedVideoStream(threading.Thread):
             # (e.g. the phone restarted mid-packet) fails cleanly instead of spinning
             # hot on a decode loop that can never produce a frame.
             stall = 0
+            exit_reason = "video stream ended"
             while not self._halt.is_set():
                 try:
                     frame = next(container.decode(vstream))
@@ -656,16 +694,27 @@ class FramedVideoStream(threading.Thread):
                     # but only a few in a row.
                     stall += 1
                     if stall > 150:
-                        if not self._halt.is_set():
-                            self.on_error("%s stream stalled — the phone may have "
-                                          "restarted" % self.fmt.upper())
+                        exit_reason = ("%s stream stalled — the phone may have "
+                                       "restarted" % self.fmt.upper())
                         break
                     continue
                 try:
                     img = frame.to_image()
                 except Exception:
                     continue
+                last_decode[0] = time.time()
                 self.on_frame(img)
+            # Like the MJPEG path: ending while still connected is a failure (the
+            # phone closed the socket / its watchdog reclaimed the slot) — never
+            # end the thread silently or the UI sits black with "connected" and no
+            # fps counter forever.
+            if not self._halt.is_set():
+                if watchdog_fired[0]:
+                    exit_reason = ("%s stream delivered no decodable frames for 6s — "
+                                   "the phone may be streaming a different codec "
+                                   "(try MJPEG in the client) or its camera stalled"
+                                   % self.fmt.upper())
+                self.on_error(exit_reason)
         except ConnectionError:
             if not self._halt.is_set():
                 self.on_error("video stream ended")
@@ -733,7 +782,16 @@ class _AnnexBFeed:
         if self._eof:
             return b""
         while not self._buf:
-            chunk = self.q.get()
+            try:
+                chunk = self.q.get(timeout=5.0)
+            except queue.Empty:
+                # No data for 5s (dead link, phone stopped feeding) — treat it as
+                # EOF so a blocked av.open()/decode() unblocks and the stream fails
+                # loudly instead of hanging on a black screen with "connected".
+                # A live 30fps stream never pauses this long, so this can't fire
+                # spuriously on a healthy connection.
+                self._eof = True
+                return b""
             if chunk is None:
                 self._eof = True
                 return b""  # sticky EOF
@@ -906,11 +964,278 @@ def _read_exact_from(sock, n):
 # GUI
 # ============================================================================
 
-ACCENT = "#00c4ff"
-BG = "#101418"
-CARD = "#1b232b"
-TEXT = "#e8eef2"
-MUTED = "#9aa7b4"
+# ---------------------------------------------------------------------------
+# Brand palette — kept in sync with the Android app (colors.xml) so the
+# desktop client and the phone app share one visual identity.
+# ---------------------------------------------------------------------------
+BG = "#0B0F13"           # window background (bg_dark)
+SURFACE = "#10161C"      # header / status bars (bg_surface)
+CARD = "#161E26"         # cards (bg_card)
+CARD_ELEV = "#1B2530"    # inputs / buttons (bg_card_elevated)
+STROKE = "#26313C"
+STROKE_SOFT = "#1E2831"
+ACCENT = "#00C4FF"
+ACCENT_PRESSED = "#00A8D9"
+ACCENT_TINT = "#0E2933"
+SUCCESS = "#34D399"
+DANGER = "#F87171"
+DANGER_PRESSED = "#E05555"
+WARN = "#FBBF24"
+TEXT = "#F2F6FA"
+MUTED = "#9AA7B4"
+TERTIARY = "#5F6B78"
+
+_FONT_CACHE = {}
+
+
+def _font(size, bold=False):
+    """Cached tkfont.Font — creating fonts is slow when redrawn per frame."""
+    key = (size, bold)
+    f = _FONT_CACHE.get(key)
+    if f is None:
+        f = tkfont.Font(family="Segoe UI", size=size,
+                        weight="bold" if bold else "normal")
+        _FONT_CACHE[key] = f
+    return f
+
+
+def _round_rect(canvas, x1, y1, x2, y2, r, **kw):
+    """Rounded rectangle drawn as a smooth polygon (works on any canvas)."""
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r, x2, y2 - r, x2, y2,
+           x2 - r, y2, x1 + r, y2, x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return canvas.create_polygon(pts, smooth=True, **kw)
+
+
+class ModernButton(tk.Canvas):
+    """Rounded flat button with hover / pressed / disabled / active states."""
+
+    def __init__(self, parent, text, command=None, kind="secondary", bold=False):
+        bg = parent.cget("bg")
+        super().__init__(parent, height=30, bg=bg, highlightthickness=0,
+                         bd=0, cursor="hand2")
+        self._text = text
+        self._command = command
+        self._kind = kind
+        self._bold = bold
+        self._disabled = False
+        self._active = False
+        self._hover = False
+        self._pressed = False
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<ButtonRelease-1>", self._release)
+        self._redraw()
+
+    def _set_hover(self, on):
+        self._hover = on
+        self._redraw()
+
+    def _press(self, _e):
+        self._pressed = True
+        self._redraw()
+
+    def _release(self, _e):
+        self._pressed = False
+        self._redraw()
+        if self._command and not self._disabled:
+            self._command()
+
+    def config(self, **kw):
+        for k, v in kw.items():
+            if k == "text":
+                self._text = v
+            elif k == "command":
+                self._command = v
+            elif k == "state":
+                self._disabled = (v == tk.DISABLED)
+            elif k == "kind":
+                self._kind = v
+        self._redraw()
+
+    def set_active(self, on):
+        """Toggle-style highlight (Mute / Virtual cam / Mirror)."""
+        self._active = bool(on)
+        self._redraw()
+
+    def _redraw(self):
+        self.delete("all")
+        h = int(self["height"])
+        w = max(_font(9, self._bold).measure(self._text) + 30, 48)
+        self.configure(width=w)
+        r = h // 2 - 1
+        if self._disabled:
+            fill, fg, outline = CARD, TERTIARY, STROKE
+        elif self._kind == "primary":
+            fill = ACCENT
+            if self._pressed:
+                fill = ACCENT_PRESSED
+            elif self._hover:
+                fill = "#38D6FF"
+            fg, outline = "#00141A", ""
+        elif self._kind == "danger":
+            fill = DANGER
+            if self._pressed:
+                fill = DANGER_PRESSED
+            elif self._hover:
+                fill = "#FA8A8A"
+            fg, outline = "#2A0F14", ""
+        else:  # secondary
+            fill = CARD_ELEV
+            if self._pressed:
+                fill = "#15202B"
+            elif self._hover:
+                fill = "#22323F"
+            fg, outline = TEXT, STROKE
+        if self._active and self._kind not in ("primary", "danger"):
+            fill, fg, outline = ACCENT_TINT, ACCENT, ACCENT
+        _round_rect(self, 1, 1, w - 1, h - 1, r, fill=fill, outline=outline,
+                    width=1 if outline else 0)
+        self.create_text(w // 2, h // 2, text=self._text, fill=fg,
+                         font=_font(9, self._bold))
+
+
+class ModernEntry(tk.Frame):
+    """Rounded input field with an accent focus ring."""
+
+    def __init__(self, parent, width=150, height=30, font_size=10):
+        bg = parent.cget("bg")
+        super().__init__(parent, bg=bg, width=width, height=height)
+        self.pack_propagate(False)
+        self._fwidth, self._fheight = width, height
+        self._cv = tk.Canvas(self, width=width, height=height, bg=bg,
+                             highlightthickness=0, bd=0)
+        self._cv.place(x=0, y=0)
+        self.entry = tk.Entry(self, font=_font(font_size), bg=CARD_ELEV, fg=TEXT,
+                              insertbackground=ACCENT, relief=tk.FLAT, bd=0,
+                              highlightthickness=0)
+        self.entry.place(x=10, y=0, relheight=1, width=width - 20)
+        self._focused = False
+        self.entry.bind("<FocusIn>", lambda e: self._focus(True))
+        self.entry.bind("<FocusOut>", lambda e: self._focus(False))
+        self._redraw()
+
+    def _focus(self, on):
+        self._focused = on
+        self._redraw()
+
+    def _redraw(self):
+        self._cv.delete("all")
+        outline = ACCENT if self._focused else STROKE
+        _round_rect(self._cv, 1, 1, self._fwidth - 1, self._fheight - 1,
+                    self._fheight // 2 - 1, fill=CARD_ELEV, outline=outline,
+                    width=1)
+
+    # ---- forward the Entry API used by the rest of the client ----------------
+    def get(self):
+        return self.entry.get()
+
+    def delete(self, *args):
+        return self.entry.delete(*args)
+
+    def insert(self, *args):
+        return self.entry.insert(*args)
+
+    def config(self, **kw):
+        if "state" in kw:
+            self.entry.config(state=kw["state"])
+        self.entry.config(**{k: v for k, v in kw.items() if k != "state"})
+        return self
+
+
+class ModernSwitch(tk.Canvas):
+    """Small iOS-style toggle bound to a BooleanVar."""
+
+    def __init__(self, parent, var, command=None):
+        bg = parent.cget("bg")
+        super().__init__(parent, width=40, height=22, bg=bg, highlightthickness=0,
+                         bd=0, cursor="hand2")
+        self.var = var
+        self.command = command
+        self.bind("<Button-1>", self._toggle)
+        self.var.trace_add("write", lambda *_: self._redraw())
+        self._redraw()
+
+    def _toggle(self, _e):
+        self.var.set(not self.var.get())
+        if self.command:
+            self.command()
+
+    def _redraw(self):
+        self.delete("all")
+        on = self.var.get()
+        _round_rect(self, 1, 3, 39, 19, 8,
+                    fill=ACCENT if on else "#26313C", outline="")
+        kx = 22 if on else 4
+        self.create_oval(kx, 5, kx + 14, 19, fill="#FFFFFF", outline="")
+
+
+class ModernSlider(tk.Canvas):
+    """Rounded track slider with a circular knob (replaces tk.Scale)."""
+
+    def __init__(self, parent, lo, hi, resolution, var, length=150):
+        bg = parent.cget("bg")
+        super().__init__(parent, width=length, height=28, bg=bg,
+                         highlightthickness=0, bd=0, cursor="hand2")
+        self.lo, self.hi, self.res = float(lo), float(hi), float(resolution)
+        self.var = var
+        self.command = None
+        self._drag = False
+        self._pad = 8
+        self.bind("<ButtonPress-1>", self._press)
+        self.bind("<B1-Motion>", self._motion)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.var.trace_add("write", lambda *_: self._redraw())
+        self._redraw()
+
+    def configure(self, **kw):
+        if "command" in kw:
+            self.command = kw.pop("command")
+        super().configure(**kw)
+
+    def _frac(self):
+        if self.hi <= self.lo:
+            return 0.0
+        return max(0.0, min(1.0, (self.var.get() - self.lo) / (self.hi - self.lo)))
+
+    def _value_at(self, x):
+        w = int(self["width"])
+        f = (x - self._pad) / max(1, w - 2 * self._pad)
+        v = self.lo + f * (self.hi - self.lo)
+        if self.res:
+            v = round(v / self.res) * self.res
+        return max(self.lo, min(self.hi, v))
+
+    def _press(self, e):
+        self._drag = True
+        self._set(e)
+
+    def _motion(self, e):
+        if self._drag:
+            self._set(e)
+
+    def _release(self, _e):
+        self._drag = False
+        self._redraw()
+
+    def _set(self, e):
+        v = self._value_at(e.x)
+        self.var.set(v)
+        if self.command:
+            self.command(v)
+
+    def _redraw(self):
+        self.delete("all")
+        w = int(self["width"])
+        y = 14
+        x1, x2 = self._pad, w - self._pad
+        f = self._frac()
+        kx = x1 + f * (x2 - x1)
+        _round_rect(self, x1, y - 3, x2, y + 3, 3, fill="#2A3540")
+        if kx > x1 + 1:
+            _round_rect(self, x1, y - 3, kx, y + 3, 3, fill=ACCENT)
+        self.create_oval(kx - 7, y - 7, kx + 7, y + 7, fill="#FFFFFF",
+                         outline=ACCENT, width=1)
 
 
 def load_config():
@@ -950,8 +1275,8 @@ class App:
         self.root = root
         root.title("OpenCam Client v%s" % VERSION)
         root.configure(bg=BG)
-        root.geometry("1000x640")
-        root.minsize(760, 480)
+        root.geometry("1080x700")
+        root.minsize(820, 560)
 
         self.phone = None
         self.video = None
@@ -1082,58 +1407,86 @@ class App:
 
     # ---- UI construction -----------------------------------------------------
     def _build_ui(self):
-        top = tk.Frame(self.root, bg=CARD)
-        top.pack(fill=tk.X)
+        root = self.root
+        root.configure(bg=BG)
 
-        tk.Label(top, text="OpenCam", font=("Segoe UI", 16, "bold"),
-                 bg=CARD, fg=ACCENT).pack(side=tk.LEFT, padx=(14, 10), pady=10)
+        # ============================== header ==============================
+        header = tk.Frame(root, bg=SURFACE)
+        header.pack(fill=tk.X)
 
-        self.lbl_device = tk.Label(top, text="not connected", font=("Segoe UI", 10),
-                                   bg=CARD, fg=MUTED)
-        self.lbl_device.pack(side=tk.LEFT, pady=10)
+        # brand block: glyph + wordmark + version chip
+        brand = tk.Frame(header, bg=SURFACE)
+        brand.pack(side=tk.LEFT, padx=(14, 0), pady=10)
+        glyph = tk.Canvas(brand, width=22, height=22, bg=SURFACE,
+                          highlightthickness=0)
+        glyph.pack(side=tk.LEFT, padx=(0, 8))
+        _round_rect(glyph, 2, 7, 20, 21, 4, fill=ACCENT)
+        glyph.create_oval(7, 9, 15, 17, fill=SURFACE, outline="")
+        tk.Label(brand, text="OpenCam", font=("Segoe UI", 15, "bold"),
+                 bg=SURFACE, fg=TEXT).pack(side=tk.LEFT)
+        tk.Label(brand, text="v%s" % VERSION, font=("Segoe UI", 8, "bold"),
+                 bg=ACCENT_TINT, fg=ACCENT, padx=5, pady=1).pack(side=tk.LEFT,
+                                                                  padx=(8, 0))
 
-        self.lbl_battery = tk.Label(top, text="", font=("Segoe UI", 10),
-                                    bg=CARD, fg=TEXT)
-        self.lbl_battery.pack(side=tk.RIGHT, padx=14, pady=10)
+        # right cluster: connection pill + battery
+        right = tk.Frame(header, bg=SURFACE)
+        right.pack(side=tk.RIGHT, padx=14, pady=10)
 
-        # connect bar
-        bar = tk.Frame(self.root, bg=BG)
-        bar.pack(fill=tk.X, padx=12, pady=(10, 6))
+        self.lbl_battery = tk.Label(right, text="", font=("Segoe UI", 9),
+                                    bg=SURFACE, fg=MUTED)
+        self.lbl_battery.pack(side=tk.RIGHT, padx=(12, 0))
+        self.battery_icon = tk.Canvas(right, width=26, height=12, bg=SURFACE,
+                                      highlightthickness=0)
+        self.battery_icon.pack(side=tk.RIGHT)
+        self._draw_battery_icon(None)
 
-        tk.Label(bar, text="Phone IP:", bg=BG, fg=MUTED).pack(side=tk.LEFT)
-        self.entry_host = tk.Entry(bar, width=16, bg=CARD, fg=TEXT,
-                                   insertbackground=TEXT, relief=tk.FLAT)
-        self.entry_host.pack(side=tk.LEFT, padx=6, ipady=4)
+        # connection pill: colored dot + state text
+        self._conn_pill = tk.Frame(header, bg=CARD_ELEV)
+        self._conn_pill.pack(side=tk.RIGHT, pady=10)
+        self._conn_dot = tk.Canvas(self._conn_pill, width=10, height=10,
+                                   bg=CARD_ELEV, highlightthickness=0)
+        self._conn_dot.pack(side=tk.LEFT, padx=(8, 5), pady=6)
+        self._conn_lbl = tk.Label(self._conn_pill, text="Disconnected",
+                                  font=("Segoe UI", 8, "bold"), bg=CARD_ELEV,
+                                  fg=TERTIARY)
+        self._conn_lbl.pack(side=tk.LEFT, padx=(0, 10), pady=6)
 
-        tk.Label(bar, text="Port:", bg=BG, fg=MUTED).pack(side=tk.LEFT)
-        self.entry_port = tk.Entry(bar, width=6, bg=CARD, fg=TEXT,
-                                   insertbackground=TEXT, relief=tk.FLAT)
+        self.lbl_device = tk.Label(header, text="not connected",
+                                   font=("Segoe UI", 9), bg=SURFACE, fg=MUTED)
+        self.lbl_device.pack(side=tk.LEFT, padx=(18, 0), pady=13)
+
+        # ============================ connect card ===========================
+        card = tk.Frame(root, bg=CARD)
+        card.pack(fill=tk.X, padx=14, pady=(12, 0))
+
+        # row 1: address + connect/scan + scan results
+        row1 = tk.Frame(card, bg=CARD)
+        row1.pack(fill=tk.X, padx=14, pady=(12, 8))
+
+        self.entry_host = ModernEntry(row1, width=160, font_size=10)
+        self.entry_host.pack(side=tk.LEFT)
+        self.entry_port = ModernEntry(row1, width=62, font_size=10)
         self.entry_port.insert(0, str(DEFAULT_PORT))
-        self.entry_port.pack(side=tk.LEFT, padx=6, ipady=4)
+        self.entry_port.pack(side=tk.LEFT, padx=(10, 0))
 
-        self.btn_connect = tk.Button(bar, text="Connect", command=self._toggle_connect,
-                                     bg=ACCENT, fg="#001014", activebackground="#33d2ff",
-                                     activeforeground="#001014", relief=tk.FLAT,
-                                     font=("Segoe UI", 10, "bold"), cursor="hand2")
-        self.btn_connect.pack(side=tk.LEFT, padx=(10, 0), ipadx=14, ipady=4)
-
-        # auto-discover phones on the LAN (subnet scan)
-        self.btn_scan = tk.Button(bar, text="Scan", command=self._cmd_scan,
-                                  bg=CARD, fg=TEXT, activebackground="#2a333d",
-                                  activeforeground=ACCENT, relief=tk.FLAT,
-                                  font=("Segoe UI", 10), cursor="hand2")
-        self.btn_scan.pack(side=tk.LEFT, padx=(8, 0), ipadx=12, ipady=4)
+        self.btn_connect = ModernButton(row1, "Connect", self._toggle_connect,
+                                        kind="primary", bold=True)
+        self.btn_connect.pack(side=tk.LEFT, padx=(16, 0))
+        self.btn_scan = ModernButton(row1, "Scan", self._cmd_scan)
+        self.btn_scan.pack(side=tk.LEFT, padx=(8, 0))
 
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("Scan.TCombobox", fieldbackground=CARD, background=CARD,
-                        foreground=TEXT, arrowcolor=TEXT, bordercolor="#2a333d",
-                        lightcolor=CARD, darkcolor=CARD, insertcolor=TEXT)
-        style.map("Scan.TCombobox",
-                  fieldbackground=[("readonly", CARD)],
+        style.configure("Modern.TCombobox", fieldbackground=CARD_ELEV,
+                        background=CARD_ELEV, foreground=TEXT, arrowcolor=ACCENT,
+                        bordercolor=STROKE, lightcolor=CARD_ELEV,
+                        darkcolor=CARD_ELEV, insertcolor=TEXT, padding=4)
+        style.map("Modern.TCombobox",
+                  fieldbackground=[("readonly", CARD_ELEV)],
                   foreground=[("readonly", TEXT)])
-        self.combo_results = ttk.Combobox(bar, state="readonly", width=30,
-                                          style="Scan.TCombobox", font=("Segoe UI", 9))
+        self.combo_results = ttk.Combobox(row1, state="readonly", width=26,
+                                          style="Modern.TCombobox",
+                                          font=("Segoe UI", 9))
         self.combo_results.bind("<<ComboboxSelected>>", self._scan_picked)
         self.combo_results.pack(side=tk.LEFT, padx=(8, 0), ipady=3)
         self._scan_results = []
@@ -1141,71 +1494,73 @@ class App:
         self._scan_fallback_used = False
         self._connect_inflight = False  # true while a connect attempt is running
 
-        # stream mode: codec + bitrate (persisted in opencam_client.json)
-        tk.Label(bar, text="Codec:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
-        self.combo_codec = ttk.Combobox(bar, state="readonly", width=10,
-                                        style="Scan.TCombobox",
+        # row 2: stream mode (codec + quality + bitrate) and startup toggles
+        row2 = tk.Frame(card, bg=CARD)
+        row2.pack(fill=tk.X, padx=14, pady=(0, 12))
+
+        tk.Label(row2, text="Codec", font=("Segoe UI", 8, "bold"), bg=CARD,
+                 fg=TERTIARY).pack(side=tk.LEFT)
+        self.combo_codec = ttk.Combobox(row2, state="readonly", width=10,
+                                        style="Modern.TCombobox",
                                         values=[m[0] for m in STREAM_MODES],
                                         font=("Segoe UI", 9))
         self.combo_codec.bind("<<ComboboxSelected>>", self._codec_picked)
-        self.combo_codec.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
+        self.combo_codec.pack(side=tk.LEFT, padx=(6, 14), ipady=3)
         self.combo_codec.current(0)
 
-        tk.Label(bar, text="Quality:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
-        self.combo_quality = ttk.Combobox(bar, state="readonly", width=8,
-                                          style="Scan.TCombobox",
+        tk.Label(row2, text="Quality", font=("Segoe UI", 8, "bold"), bg=CARD,
+                 fg=TERTIARY).pack(side=tk.LEFT)
+        self.combo_quality = ttk.Combobox(row2, state="readonly", width=8,
+                                          style="Modern.TCombobox",
                                           values=[p[0] for p in QUALITY_PRESETS]
                                                  + ["Custom"],
                                           font=("Segoe UI", 9))
         self.combo_quality.bind("<<ComboboxSelected>>", self._quality_picked)
-        self.combo_quality.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
+        self.combo_quality.pack(side=tk.LEFT, padx=(6, 14), ipady=3)
         self.combo_quality.current(2)  # High
 
-        tk.Label(bar, text="Bitrate:", bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(10, 0))
-        self.combo_bitrate = ttk.Combobox(bar, state="readonly", width=7,
-                                          style="Scan.TCombobox",
+        tk.Label(row2, text="Bitrate", font=("Segoe UI", 8, "bold"), bg=CARD,
+                 fg=TERTIARY).pack(side=tk.LEFT)
+        self.combo_bitrate = ttk.Combobox(row2, state="readonly", width=7,
+                                          style="Modern.TCombobox",
                                           values=[str(b) for b in BITRATE_CHOICES],
                                           font=("Segoe UI", 9))
         self.combo_bitrate.bind("<<ComboboxSelected>>", self._bitrate_picked)
-        self.combo_bitrate.pack(side=tk.LEFT, padx=(4, 0), ipady=3)
+        self.combo_bitrate.pack(side=tk.LEFT, padx=(6, 14), ipady=3)
         self.combo_bitrate.current(2)  # 6000
 
         # startup behaviour toggles (persisted in opencam_client.json)
+        toggles = tk.Frame(row2, bg=CARD)
+        toggles.pack(side=tk.RIGHT)
         self.var_auto_connect = tk.BooleanVar(value=True)
-        self.chk_auto_connect = tk.Checkbutton(
-            bar, text="Auto-connect", variable=self.var_auto_connect,
-            command=self._on_auto_toggle, bg=BG, fg=TEXT, activebackground=BG,
-            activeforeground=ACCENT, selectcolor=CARD, font=("Segoe UI", 9),
-            highlightthickness=0, cursor="hand2")
-        self.chk_auto_connect.pack(side=tk.LEFT, padx=(8, 0))
+        self.chk_auto_connect = tk.Frame(toggles, bg=CARD)
+        self.chk_auto_connect.pack(side=tk.LEFT, padx=(0, 16))
+        tk.Label(self.chk_auto_connect, text="Auto-connect", bg=CARD, fg=TEXT,
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        ModernSwitch(self.chk_auto_connect, self.var_auto_connect,
+                     self._on_auto_toggle).pack(side=tk.LEFT)
         self.var_auto_vcam = tk.BooleanVar(value=True)
-        self.chk_auto_vcam = tk.Checkbutton(
-            bar, text="Virtual cam on connect", variable=self.var_auto_vcam,
-            command=self._on_auto_toggle, bg=BG, fg=TEXT, activebackground=BG,
-            activeforeground=ACCENT, selectcolor=CARD, font=("Segoe UI", 9),
-            highlightthickness=0, cursor="hand2")
-        self.chk_auto_vcam.pack(side=tk.LEFT, padx=(8, 0))
+        self.chk_auto_vcam = tk.Frame(toggles, bg=CARD)
+        self.chk_auto_vcam.pack(side=tk.LEFT)
+        tk.Label(self.chk_auto_vcam, text="Virtual cam on connect", bg=CARD,
+                 fg=TEXT, font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        ModernSwitch(self.chk_auto_vcam, self.var_auto_vcam,
+                     self._on_auto_toggle).pack(side=tk.LEFT)
 
-        self.lbl_status = tk.Label(bar, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
-        self.lbl_status.pack(side=tk.RIGHT)
-
-        # video area
-        wrap = tk.Frame(self.root, bg="#000", highlightthickness=1,
-                        highlightbackground="#2a333d")
-        wrap.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
-        self.canvas = tk.Canvas(wrap, bg="#000", highlightthickness=0)
+        # =========================== video viewport ===========================
+        wrap = tk.Frame(root, bg=BG, highlightthickness=1,
+                        highlightbackground=STROKE)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=14, pady=(12, 0))
+        self.canvas = tk.Canvas(wrap, bg=BG, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        # controls
-        ctrl = tk.Frame(self.root, bg=BG)
-        ctrl.pack(fill=tk.X, padx=12, pady=(0, 12))
+        # ============================= controls ===============================
+        ctrl = tk.Frame(root, bg=BG)
+        ctrl.pack(fill=tk.X, padx=14, pady=(12, 12))
 
         row1 = tk.Frame(ctrl, bg=BG)
-        row1.pack(fill=tk.X)
-        self._add_button(row1, "Stop stream", self._cmd_stop)
+        row1.pack(fill=tk.X, pady=(0, 8))
+        self._add_button(row1, "Stop stream", self._cmd_stop, kind="danger")
         self._add_button(row1, "Restart", self._cmd_restart)
         self._add_button(row1, "Switch camera", self._cmd_camera)
         self._add_button(row1, "Torch", self._cmd_torch)
@@ -1226,12 +1581,23 @@ class App:
         self.lbl_row2.pack(side=tk.LEFT)
         # sliders are added by _build_controls() once camera info arrives
 
-    def _add_button(self, parent, text, cmd):
-        b = tk.Button(parent, text=text, command=cmd,
-                      bg=CARD, fg=TEXT, activebackground="#2a333d",
-                      activeforeground=ACCENT, relief=tk.FLAT,
-                      font=("Segoe UI", 9), cursor="hand2")
-        b.pack(side=tk.LEFT, padx=(0, 8), ipadx=12, ipady=4)
+        # ============================= status bar =============================
+        status = tk.Frame(root, bg=SURFACE)
+        status.pack(side=tk.BOTTOM, fill=tk.X)
+        tk.Frame(status, bg=STROKE, height=1).pack(fill=tk.X)
+        self.lbl_status = tk.Label(status, text="", bg=SURFACE, fg=MUTED,
+                                   font=("Segoe UI", 9))
+        self.lbl_status.pack(side=tk.LEFT, padx=14, pady=6)
+        tk.Label(status, text="OpenCam Client v%s" % VERSION, bg=SURFACE,
+                 fg=TERTIARY, font=("Segoe UI", 8)).pack(side=tk.RIGHT,
+                                                           padx=14, pady=6)
+
+        # draw the initial state of the connection pill (dot + label)
+        self._set_conn_state("offline")
+
+    def _add_button(self, parent, text, cmd, kind="secondary"):
+        b = ModernButton(parent, text, command=cmd, kind=kind)
+        b.pack(side=tk.LEFT, padx=(0, 8))
         return b
 
     def _clear_controls(self):
@@ -1272,15 +1638,12 @@ class App:
         frame.pack(side=tk.LEFT, padx=(14, 0))
         value = max(float(lo), min(float(hi), float(value)))
         var = tk.DoubleVar(value=value)
-        tk.Label(frame, text=label, bg=BG, fg=MUTED,
-                 font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        scale = tk.Scale(frame, from_=lo, to=hi, resolution=step, orient=tk.HORIZONTAL,
-                         variable=var, length=140, showvalue=False,
-                         bg=BG, fg=TEXT, troughcolor=CARD,
-                         highlightthickness=0, activebackground=ACCENT)
-        scale.pack(side=tk.LEFT, padx=(6, 4))
+        tk.Label(frame, text=label, bg=BG, fg=TERTIARY,
+                 font=("Segoe UI", 8, "bold")).pack(side=tk.LEFT)
+        scale = ModernSlider(frame, lo, hi, step, var, length=140)
+        scale.pack(side=tk.LEFT, padx=(8, 6))
         lbl = tk.Label(frame, text=fmt % value, bg=BG, fg=ACCENT,
-                       font=("Segoe UI", 9), width=6)
+                       font=("Segoe UI", 9, "bold"), width=6)
         lbl.pack(side=tk.LEFT)
 
         def changed(*_a):
@@ -1547,6 +1910,7 @@ class App:
         _log("connect requested: %s:%d (fallback candidates: %d)"
              % (host, port, len(candidates or [])))
         self._set_status("connecting…")
+        self._set_conn_state("connecting")
         self.btn_connect.config(state=tk.DISABLED)
         self._scan_fallback_used = False
         self._connect_inflight = True
@@ -1621,6 +1985,12 @@ class App:
                 if not self._connect_inflight:
                     _log("connect aborted: disconnect happened mid-flight")
                     return
+                # Mark the session connected BEFORE starting the streams: the
+                # stream threads guard on self.connected, but _connected() (which
+                # normally sets it) only runs afterwards via the UI queue — so the
+                # initial video/audio streams were always skipped, leaving the
+                # client "connected" with a black screen and no video.
+                self.connected = True
                 # start video first so the UI has frames as soon as possible
                 self._start_streams()
                 self._post_ui(lambda host=host, port=port, info=info:
@@ -1736,7 +2106,9 @@ class App:
         self._connect_inflight = False
         self._reconnect_try = 0
         _log("connected to %s:%d (info: %s)" % (host, port, info))
-        self.btn_connect.config(text="Disconnect", state=tk.NORMAL)
+        self.btn_connect.config(text="Disconnect", state=tk.NORMAL,
+                                kind="danger")
+        self._set_conn_state("connected")
         self._update_device_label(info)
         save_config({"host": host, "port": int(port),
                      "codec": self.codec, "bitrate": self.bitrate,
@@ -1755,7 +2127,8 @@ class App:
     def _connect_failed(self, err):
         _log("connect failed: %s" % err)
         self._connect_inflight = False
-        self.btn_connect.config(state=tk.NORMAL)
+        self.btn_connect.config(state=tk.NORMAL, kind="primary")
+        self._set_conn_state("error")
         self._set_status("connect failed: %s — is the phone streaming? "
                          "(tap Start Streaming in the OpenCam app, same network)" % err,
                          error=True)
@@ -1782,10 +2155,13 @@ class App:
         self.latest = None
         self.latest_id = 0
         self._drawn_id = -1
+        self._canvas_size = (0, 0)  # force the idle placeholder to redraw
         self.canvas.delete("all")
         self.lbl_device.config(text="not connected")
         self.lbl_battery.config(text="")
-        self.btn_connect.config(text="Connect")
+        self._draw_battery_icon(None)
+        self.btn_connect.config(text="Connect", kind="primary")
+        self._set_conn_state("offline")
         self._set_status("disconnected")
         self._clear_controls()
         self.fps = 0.0
@@ -1852,6 +2228,7 @@ class App:
     def _flip_mute(self):
         self.muted = not self.muted
         self.btn_mute.config(text="Unmute mic" if self.muted else "Mute mic")
+        self.btn_mute.set_active(self.muted)
 
     def _cmd_af(self):
         phone = self.phone
@@ -1875,6 +2252,7 @@ class App:
     def _cmd_mirror(self):
         self.mirrored = not self.mirrored
         self.btn_mirror.config(text="Mirror: ON" if self.mirrored else "Mirror: OFF")
+        self.btn_mirror.set_active(self.mirrored)
         self._persist_view()
         self._set_status("mirror %s" % ("on" if self.mirrored else "off"))
 
@@ -1967,6 +2345,7 @@ class App:
     def _vcam_on(self, w, h):
         self.vcam_active = True
         self.btn_vcam.config(state=tk.NORMAL, text="Virtual cam: ON")
+        self.btn_vcam.set_active(True)
         name = vcam_mf.DEVICE_NAME if (HAS_VCAM_MF and isinstance(
             self.vcam, vcam_mf.MfVcam)) else virtualcam.DEVICE_NAME
         self._set_status("virtual camera on — '%s' is now available in apps"
@@ -2009,6 +2388,7 @@ class App:
             self.vcam = None
         if hasattr(self, "btn_vcam"):
             self.btn_vcam.config(state=tk.NORMAL, text="Virtual cam")
+            self.btn_vcam.set_active(False)
 
     # ---- stream callbacks (called from reader threads) -------------------------
     def _on_frame(self, img):
@@ -2060,6 +2440,7 @@ class App:
         self._reconnect_try = n
         self._reconnect_pending = True
         _log("stream lost — reconnect attempt %d/4" % n)
+        self._set_conn_state("reconnecting")
         self._set_status("stream lost — reconnecting (attempt %d/4)…" % n)
         # stop the old (dead) stream threads so their sockets don't linger
         if self.video:
@@ -2115,18 +2496,33 @@ class App:
             self.fps = self.frame_counter / (now - self.fps_last)
             self.frame_counter = 0
             self.fps_last = now
-        # draw the newest frame — but only when there IS a new frame, or the canvas
-        # was resized. Redrawing every 40 ms otherwise rebuilt the PhotoImage and
-        # LANCZOS-resized the same frame ~25 times per second for nothing, stealing
-        # CPU from the decoder and making the preview stutter on slow machines.
-        if self.latest is not None and self.connected:
+        if self.connected:
+            # draw the newest frame — but only when there IS a new frame, or the
+            # canvas was resized. Redrawing every 40 ms otherwise rebuilt the
+            # PhotoImage and LANCZOS-resized the same frame ~25 times per second
+            # for nothing, stealing CPU from the decoder and making the preview
+            # stutter on slow machines.
+            if self.latest is not None:
+                size = (self.canvas.winfo_width(), self.canvas.winfo_height())
+                if size != self._canvas_size:
+                    self._canvas_size = size
+                    self._drawn_id = -1  # force a redraw of the current frame
+                if self.latest_id != self._drawn_id:
+                    self._drawn_id = self.latest_id
+                    self._draw(self.latest)
+            # pulse the LIVE dot once a second without touching the video frame
+            if self.latest is not None and now - getattr(self, "_pulse_t", 0.0) >= 1.0:
+                self._pulse_t = now
+                self._live_pulse = not getattr(self, "_live_pulse", False)
+                iw, ih = getattr(self, "_stream_wh", (0, 0))
+                self._draw_overlays(self.canvas.winfo_width(),
+                                    self.canvas.winfo_height(), iw, ih)
+        else:
+            # idle screen — keep the placeholder art in sync with window resizes
             size = (self.canvas.winfo_width(), self.canvas.winfo_height())
             if size != self._canvas_size:
                 self._canvas_size = size
-                self._drawn_id = -1  # force a redraw of the current frame
-            if self.latest_id != self._drawn_id:
-                self._drawn_id = self.latest_id
-                self._draw(self.latest)
+                self._draw_placeholder(connecting=self._connect_inflight)
         # refresh battery / camera info every ~10s
         if self.connected and now - self._last_aux >= 10.0:
             self._last_aux = now
@@ -2139,6 +2535,7 @@ class App:
         if cw < 10 or ch < 10:
             return
         iw, ih = img.size
+        self._stream_wh = (iw, ih)
         scale = min(cw / iw, ch / ih)
         if scale >= 1 and cw >= iw and ch >= ih:
             scale = 1.0
@@ -2152,10 +2549,103 @@ class App:
         self.photo = ImageTk.PhotoImage(img)
         self.canvas.delete("all")
         self.canvas.create_image(cw // 2, ch // 2, image=self.photo)
-        if self.connected:
-            self.canvas.create_text(10, 10, anchor=tk.NW, fill="#9aa7b4",
-                                    font=("Segoe UI", 9),
-                                    text="%.1f fps  ·  %d×%d" % (self.fps, iw, ih))
+        self._draw_overlays(cw, ch, iw, ih)
+
+    # ---- video overlay badges (LIVE pill, stream info, fps, vcam) -----------
+    def _badge(self, cv, x, y, text, fill="#1A222C", fg=MUTED, bold=False,
+               align="left"):
+        """Small rounded chip drawn on the video canvas (tag: overlay)."""
+        f = _font(8, bold)
+        tw = f.measure(text)
+        w, h = tw + 16, 20
+        if align == "right":
+            x -= w
+        _round_rect(cv, x, y, x + w, y + h, 10, fill=fill, outline=STROKE,
+                    width=1, tags="overlay")
+        cv.create_text(x + w // 2, y + h // 2, text=text, fill=fg, font=f,
+                       tags="overlay")
+
+    def _draw_overlays(self, cw, ch, iw, ih):
+        """Draw the HUD chips over the video frame (only the chips — the frame
+        is never touched, so the pulse only redraws these)."""
+        cv = self.canvas
+        if cw < 10 or ch < 10:
+            return
+        cv.delete("overlay")
+        m = 10
+        # LIVE pill (top-left) with a pulsing red dot
+        on = getattr(self, "_live_pulse", False)
+        f = _font(8, True)
+        w, h = f.measure("LIVE") + 32, 20
+        _round_rect(cv, m, m, m + w, m + h, 10, fill="#1A222C", outline=STROKE,
+                    width=1, tags="overlay")
+        dot = "#FF5A5F" if on else "#7A2E33"
+        cv.create_oval(m + 8, m + h // 2 - 4, m + 16, m + h // 2 + 4, fill=dot,
+                       outline="", tags="overlay")
+        cv.create_text(m + 22, m + h // 2, text="LIVE", fill=TEXT, font=f,
+                       anchor="w", tags="overlay")
+        # stream info chip (top-right): resolution · codec · fps
+        codec_label = dict((m2[1], m2[0]) for m2 in STREAM_MODES).get(
+            self.codec, self.codec.upper())
+        info = "%d×%d  ·  %s  ·  %.0f fps" % (iw, ih, codec_label, self.fps)
+        self._badge(cv, cw - m, m, info, align="right")
+        # virtual camera chip (bottom-right)
+        if self.vcam_active:
+            self._badge(cv, cw - m, ch - m - 20, "VCAM ON", fill=ACCENT_TINT,
+                        fg=ACCENT, bold=True, align="right")
+
+    def _draw_placeholder(self, connecting=False):
+        """Idle screen: camera glyph + connect hint on the empty viewport."""
+        cv = self.canvas
+        cw, ch = cv.winfo_width(), cv.winfo_height()
+        if cw < 10 or ch < 10:
+            return
+        cv.delete("all")
+        cx, cy = cw // 2, ch // 2
+        _round_rect(cv, cx - 44, cy - 40, cx + 44, cy + 28, 12, fill=CARD,
+                    outline=STROKE, width=1)
+        cv.create_oval(cx - 20, cy - 16, cx + 20, cy + 24, outline=MUTED, width=2)
+        cv.create_oval(cx - 9, cy - 5, cx + 9, cy + 13, fill=ACCENT, outline="")
+        if connecting:
+            cv.create_text(cx, cy + 56, text="Connecting…", fill=TEXT,
+                           font=_font(13, True))
+            cv.create_text(cx, cy + 78,
+                           text="Contacting the phone on this network…",
+                           fill=MUTED, font=_font(9))
+        else:
+            cv.create_text(cx, cy + 56, text="Connect to your phone", fill=TEXT,
+                           font=_font(13, True))
+            cv.create_text(cx, cy + 78,
+                           text="Enter the IP above and press Connect — or hit Scan",
+                           fill=MUTED, font=_font(9))
+
+    def _draw_battery_icon(self, level):
+        """Draw a tiny battery glyph next to the percentage label."""
+        cv = self.battery_icon
+        cv.delete("all")
+        cv.create_rectangle(1, 2, 21, 10, outline=STROKE, width=1)
+        cv.create_rectangle(22, 4, 24, 8, fill=STROKE, outline="")
+        if level is None:
+            return
+        pct = max(0, min(100, int(level)))
+        w = int(18 * pct / 100.0)
+        color = SUCCESS if pct > 30 else (WARN if pct > 15 else DANGER)
+        if w > 0:
+            cv.create_rectangle(2, 3, 2 + w, 9, fill=color, outline="")
+
+    def _set_conn_state(self, state):
+        """Header connection pill: dot colour + label per state."""
+        styles = {
+            "offline": (TERTIARY, "Disconnected"),
+            "connecting": (WARN, "Connecting…"),
+            "connected": (SUCCESS, "Connected"),
+            "reconnecting": (WARN, "Reconnecting…"),
+            "error": (DANGER, "Error"),
+        }
+        color, text = styles.get(state, styles["offline"])
+        self._conn_dot.delete("all")
+        self._conn_dot.create_oval(2, 2, 8, 8, fill=color, outline="")
+        self._conn_lbl.config(text=text, fg=color)
 
     def _refresh_aux(self):
         """Battery + camera info refresh, off the GUI thread (network calls)."""
@@ -2167,7 +2657,9 @@ class App:
             try:
                 bat = phone.battery()
                 lvl = bat.get("level", 0)
-                self._post_ui(lambda: self.lbl_battery.config(text="Battery %d%%" % lvl))
+                self._post_ui(lambda lvl=lvl: (
+                    self.lbl_battery.config(text="Battery %d%%" % lvl),
+                    self._draw_battery_icon(lvl)))
             except Exception:
                 pass
             try:
@@ -2197,7 +2689,7 @@ class App:
                 lbl.config(text=fmt % float(info[key]))
 
     def _set_status(self, text, error=False):
-        self.lbl_status.config(text=text, fg="#ff6b6b" if error else MUTED)
+        self.lbl_status.config(text=text, fg=DANGER if error else MUTED)
 
     def _on_close(self):
         self._disconnect()

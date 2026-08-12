@@ -1,5 +1,27 @@
 # OpenCam Release Notes
 
+## v1.2.0 (2026-08-12)
+
+UI release — the Windows client gets a complete visual overhaul, and a few more reliability fixes ship with it.
+
+### Windows client — modern UI
+- **New design system.** The desktop client now uses the same brand palette as the Android app (deep `#0B0F13` backgrounds, `#161E26` cards, cyan `#00C4FF` accent) so both halves of OpenCam look like one product.
+- **Redesigned layout.** A proper app chrome: brand header with version chip, a connection-status pill (gray *Disconnected* → amber *Connecting/Reconnecting* → green *Connected* → red *Error*), a battery icon that fills with green/amber/red, a bottom status bar, and grouped controls.
+- **Modern controls.** Rounded flat buttons with hover/pressed states (accent **Connect**, red **Stop stream**, tinted on-state for Mute/Virtual cam/Mirror), rounded inputs with an accent focus ring, iOS-style toggle switches replacing the old checkboxes, and smooth rounded sliders replacing the chunky `tk.Scale` for Zoom/EV/WB.
+- **Video viewport polish.** A pulsing **LIVE** badge, a stream-info chip (resolution · codec · fps), a VCAM-ON chip, and a proper idle placeholder (camera glyph + “Connect to your phone”) instead of a black void.
+- **Crisp rendering on high-DPI displays** — the client now sets DPI awareness on Windows instead of letting the OS blurry-scale it.
+- Layout rebalanced for the new chrome: 1080×700 default, 820×560 minimum.
+
+### Windows client — reliability
+- **Video stream loss is now surfaced immediately.** If the phone closes the socket mid-stream (idle watchdog, restart), the client reports it and reconnects instead of sitting on a black screen labeled “connected”.
+- **Dead H.264/H.265 streams no longer hang.** A 6s decode watchdog force-closes a stream that delivers bytes but never a decodable frame, and the demuxer feed now times out after 5s of silence — both exit cleanly with a clear message instead of blocking forever.
+- **First connect now starts the video/audio streams reliably** (the connected flag was previously set only after the streams had already been skipped).
+
+### Validation
+- Windows client self-test passes 12/12; mock server loops its stream until the client disconnects (as a real phone would).
+
+---
+
 ## v1.1.2 (2026-08-11)
 
 Latency release — eliminates the "video plays seconds behind, then jumps forward, then lags again" cycles by removing every place a frame backlog can build on either side of the connection.

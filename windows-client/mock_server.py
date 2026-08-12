@@ -321,12 +321,15 @@ class MockServer(threading.Thread):
             conn.close()
             return
         try:
-            for pts, payload in pkts:
-                hdr = struct.pack("<qi", pts, len(payload))
-                conn.sendall(hdr + payload)
-                time.sleep(0.033)
-            # end-of-stream marker
-            conn.sendall(struct.pack("<qi", -1, -1))
+            # A real phone streams forever; loop the encoded packets (config +
+            # pictures ≈ 30fps) until the client disconnects. The client treats a
+            # stream that ends on its own as a failure (reconnect), so the mock
+            # must not close the connection mid-test.
+            while True:
+                for pts, payload in pkts:
+                    hdr = struct.pack("<qi", pts, len(payload))
+                    conn.sendall(hdr + payload)
+                    time.sleep(0.033)
         except OSError:
             pass
         try:
