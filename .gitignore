@@ -1,37 +1,29 @@
-# Build output
-build/
-.gradle/
-*.apk
-*.aab
-
-# Windows client (PyInstaller)
-windows-client/build/
-windows-client/dist/
-windows-client/__pycache__/
-windows-client/*.spec
-windows-client/opencam_client.json
-
-# IDE
-.idea/
 *.iml
-local.properties
+.gradle
+/local.properties
+/.idea
 .DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+app/build
 
-# Throwaway compile-check stub (regenerated locally when needed)
-build/stub/
-build/classes/
+# PyInstaller artifacts from pc-client/build_exe.bat
+pc-client/build/
+pc-client/dist/
+pc-client/*.spec
 
-# VCam C++ build output (MSBuild x64/ + NuGet packages)
-windows-client/vcam_mf_cpp/x64/
-windows-client/vcam_mf_cpp/VCamSample/x64/
-windows-client/vcam_mf_cpp/VCamSampleSource/x64/
-windows-client/vcam_mf_cpp/packages/
-windows-client/vcam_mf_cpp/.vs/
-windows-client/_vcam_ref_cpp/x64/
-windows-client/_vcam_ref_cpp/VCamSample/x64/
-windows-client/_vcam_ref_cpp/VCamSampleSource/x64/
-windows-client/_vcam_ref_cpp/packages/
-windows-client/_vcam_ref_cpp/.vs/
-windows-client/_vcam_ref_net/
-windows-client/nuget.exe
-windows-client/opencam_client.log
+# Python
+__pycache__/
+*.pyc
+
+# Electron build artifacts
+pc-client-native/dist/
+pc-client-native/dist_v2/
+pc-client-native/node_modules/
+
+# Release signing (never commit the keystore or its credentials)
+/keystore/
+keystore.properties

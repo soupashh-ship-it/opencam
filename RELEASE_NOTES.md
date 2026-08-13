@@ -1,115 +1,108 @@
-# OpenCam Release Notes
+# OpenCam v1.6.2 — final release polish and connection hardening
 
-## v1.2.0 (2026-08-12)
+## Android
 
-UI release — the Windows client gets a complete visual overhaul, and a few more reliability fixes ship with it.
+- Android reports the actual Gradle app version in mDNS discovery and `/v1/status`, eliminating stale version metadata after upgrades.
+- Version bumped to `1.6.2` / versionCode `11`.
 
-### Windows client — modern UI
-- **New design system.** The desktop client now uses the same brand palette as the Android app (deep `#0B0F13` backgrounds, `#161E26` cards, cyan `#00C4FF` accent) so both halves of OpenCam look like one product.
-- **Redesigned layout.** A proper app chrome: brand header with version chip, a connection-status pill (gray *Disconnected* → amber *Connecting/Reconnecting* → green *Connected* → red *Error*), a battery icon that fills with green/amber/red, a bottom status bar, and grouped controls.
-- **Modern controls.** Rounded flat buttons with hover/pressed states (accent **Connect**, red **Stop stream**, tinted on-state for Mute/Virtual cam/Mirror), rounded inputs with an accent focus ring, iOS-style toggle switches replacing the old checkboxes, and smooth rounded sliders replacing the chunky `tk.Scale` for Zoom/EV/WB.
-- **Video viewport polish.** A pulsing **LIVE** badge, a stream-info chip (resolution · codec · fps), a VCAM-ON chip, and a proper idle placeholder (camera glyph + “Connect to your phone”) instead of a black void.
-- **Crisp rendering on high-DPI displays** — the client now sets DPI awareness on Windows instead of letting the OS blurry-scale it.
-- Layout rebalanced for the new chrome: 1080×700 default, 820×560 minimum.
+## Windows OpenCam Studio
 
-### Windows client — reliability
-- **Video stream loss is now surfaced immediately.** If the phone closes the socket mid-stream (idle watchdog, restart), the client reports it and reconnects instead of sitting on a black screen labeled “connected”.
-- **Dead H.264/H.265 streams no longer hang.** A 6s decode watchdog force-closes a stream that delivers bytes but never a decodable frame, and the demuxer feed now times out after 5s of silence — both exit cleanly with a clear message instead of blocking forever.
-- **First connect now starts the video/audio streams reliably** (the connected flag was previously set only after the streams had already been skipped).
+- Fixed stale TCP socket callbacks that could trigger duplicate reconnect loops after a manual reconnect or rapid stream restart.
+- Added explicit socket keepalive and `TCP_NODELAY` for a more predictable interactive stream path.
+- Corrupt frame headers now force a clean reconnect instead of attempting unsafe byte-level resynchronization.
+- Reworked the frame parser to avoid repeated `Buffer.concat()` allocations for every packet.
+- Wi-Fi scanning now uses each local IPv4 interface's actual subnet, limits concurrent probes, validates `/v1/status`, and avoids launching hundreds of simultaneous requests.
+- Removed the hardcoded example phone IP from the shipped UI; the saved address or network scan is used instead.
+- The native desktop preview is explicitly MJPEG-only, matching its decoder. H.264/H.265 options that previously could produce a black preview are no longer offered.
+- When the phone switches itself to a non-MJPEG codec while the desktop client is connected, the desktop client restores MJPEG and explains why.
+- Added live synchronization for phone FPS, bitrate, zoom, torch, lens, resolution and battery status.
+- Removed the online Google Fonts dependency so the desktop interface renders consistently offline.
+- Added visible keyboard-focus outlines for accessibility and more reliable keyboard navigation.
 
-### Validation
-- Windows client self-test passes 12/12; mock server loops its stream until the client disconnects (as a real phone would).
+## Validation
 
----
-
-## v1.1.2 (2026-08-11)
-
-Latency release — eliminates the "video plays seconds behind, then jumps forward, then lags again" cycles by removing every place a frame backlog can build on either side of the connection.
-
-### Windows client
-- **Fixed: MJPEG video fell seconds behind real time (then jumped forward).** JPEG decoding ran on the socket-read thread — at ~90ms per 720p frame that's slower than the phone's ~37ms frame interval, so the TCP buffer built an ever-growing backlog. The MJPEG path now mirrors the H.264 design: a reader thread parses frames off the socket as fast as possible into a bounded latest-wins queue (max 2 frames), and a separate loop decodes them. Lag is now bounded at ~2 frames (~20–50ms measured against a timestamped mock stream) instead of growing without bound.
-- **Fixed: H.264/H.265 decode backlog.** The frame queue could hold up to 128 packets (~4s of video) before dropping one. It now stays at ≤2 packets, so the decoder always works through the freshest frames; with the phone's 1s keyframe interval any dropped-packet chain re-syncs in under a second.
-- **Faster failure detection: stream read timeouts 12s → 5s** (video, encoded video, and audio). A dead link is now noticed and reconnected in ~5s instead of ~12s.
-- **Faster recovery: reconnect backoff 1.5s→3s→6s→12s → 1s→2s→3s→4s.** A transient blip now costs ~5s of frozen video instead of ~15s.
-
-### Android app
-- **Fixed: MJPEG encode backlog on the phone.** The JPEG producer now keeps at most one encode in flight — frames that arrive while an encode is pending are drained and dropped so the newest image is always what gets delivered. A slow encode or a saturated client socket can no longer make the phone's frame backlog grow.
-- **Faster H.264 re-sync: keyframe (IDR) interval 2s → 1s.** After any packet drop or reconnect the decoder recovers on the next keyframe — worst case halved from 2s to 1s.
-- **Faster stale-sink reclaim: client idle watchdog 12s → 5s** (checked every 2s). A stalled session is freed in ~5–7s instead of ~12–16s.
-
-### Validation
-- MJPEG end-to-end lag measured against a timestamped mock phone: **avg ~21ms, max ~143ms** (was ~4.5s+ growing) — real-time.
-- Windows client self-test passes 12/12; Android app compiles clean (both run as gates in the release pipeline).
+- Windows wire-protocol test suite: **10/10 passed**.
+- Node syntax checks pass for all JavaScript entry points.
+- A full Android Gradle build could not be executed in this container because Gradle/Android dependencies are not locally available and outbound dependency download is disabled.
 
 ---
 
-## v1.1.1 (2026-08-11)
+# OpenCam v1.6.1 — PC client connect fixes (OpenCam Studio)
 
-Hotfix release — fixes the connection failures reported between the Android app and the Windows client (blank screen on connect, endless CMD popups, 15s+ stale video).
+Fixes the Windows **OpenCam Studio** client so it reliably connects to the
+phone and actually shows video.
 
-### Windows client
-- **Fixed: endless CMD console popups while reconnecting.** ffplay discovery/launch now runs with `CREATE_NO_WINDOW` — every reconnect cycle used to flash a console window because the audio stream was restarted (and ffplay re-detected) on each video drop.
-- **Fixed: blank screen / reconnect churn on connect.** The client pushed its bitrate on *every* connect, and the phone restarts its whole pipeline (HTTP server included) whenever the bitrate actually changes — so the stream opened right after hit connection-refused and burned through 1.5s→3s→6s→12s backoff retries. The client now pushes bitrate/JPEG quality only when they differ from the phone's reported values, and waits for the phone's server to come back up before opening the stream — it connects on the first try.
-- **Fixed: video-only reconnects no longer tear down a healthy audio stream** (no more interrupted mic + no extra ffplay launches on every reconnect).
-- **Fixed: 15s+ stale video when the virtual camera's consumer is slow.** The DirectShow virtual-camera feed ran synchronously on the video reader thread; a slow consumer (Discord/OBS) blocked the reader, froze the preview, and tripped the phone's 12s idle watchdog. The feed now runs on a background latest-wins feeder thread (the same design as the Media Foundation backend), so the video reader can never block on the vcam.
-- **Latency: TCP_NODELAY on video/audio sockets** so the small per-frame protocol headers are never held back by Nagle's algorithm.
+- **MJPEG is enforced for the built-in preview.** The desktop viewer can only
+decode JPEG frames — picking H.264/H.265 previously "connected" but showed a
+blank screen because the frames could not be decoded. Selecting H.26x now
+switches back to MJPEG with a clear notice (the phone app itself can still
+stream whatever codec you choose on the phone).
+- **"Connected" only shows once video arrives.** The green dot no longer
+appears on a bare TCP connect — it turns on when the first frame renders, with
+a live `MJPEG WxH` readout.
+- **Clear failures instead of endless retries.** An unreachable phone now
+explains what to check (phone app open and streaming, same Wi-Fi, correct IP),
+retries with backoff, and stops after 9 attempts with guidance. If the phone
+app is outdated (pre-v1.5.3) the client says so — an old server kicks every
+reconnect, which previously looked like a permanent "won't connect".
+- **Hardened framing parser** (`pc-client-native/stream-parser.js`, corruption
+resync) covered by an automated wire test against a simulated phone
+(`pc-client-native/test_stream_parser.js`, 10 checks).
 
-### Android app
-- **Fixed: redundant pipeline restarts on connect.** `setPhoneBitrate` / `setPhoneJpegQuality` no longer restart the whole pipeline when the value is unchanged (the desktop client re-syncs its settings on every connect).
-- **Latency: TCP_NODELAY on accepted HTTP sockets** — stream sockets now send the first byte immediately instead of waiting for an ACK.
-
-### Validation
-- Windows client self-test passes 12/12 (MJPEG + H.264 decode, discovery, controls, rotate/mirror, codec sync).
-- Android app compiles clean (`assembleRelease` in CI).
-- Both run as a gate in the GitHub Actions release pipeline.
-
----
-
-## v1.1.0 (2026-08-11)
-
-Stability release — the result of a full deep audit of the Android app and the Windows client. Every found bug is fixed; both sides build and pass their test gates.
-
-### Android app
-- **Fixed: camera hardware leak on fast camera switching.** A stale camera-open could complete after a switch and was never closed — the camera stayed busy for other apps and could hijack the session of the camera that actually won. Each open now tracks its own id and closes leftover devices.
-- **Fixed: orphaned client sockets.**
-  - Requesting H.264/H.265 on a device without an encoder no longer "connects" a client that can never receive frames (its socket used to sit open forever). The client is now rejected cleanly.
-  - After a settings restart, clients that can't be re-attached (no encoder / no audio stream) are closed instead of leaking their connections.
-  - A session-reconfiguration crash no longer leaves a dangling client reference.
-- Removed an unused import; no behavior change.
-
-### Windows client
-- **Fixed: crash after disconnecting.** A scheduled stream restart firing after Disconnect could crash on a cleared phone reference; now guarded.
-- **Fixed: connect/disconnect race.** A slow auto-connect finishing after you pressed Disconnect no longer flips the app back to "connected".
-- **Fixed: potential UI freeze on disconnect** when the H.264/H.265 frame queue was full — EOF is now delivered reliably without ever blocking the UI thread.
-- **Fixed: the packaged .exe now actually bundles the Media Foundation virtual camera** (Win11 22H2+). Previously the frozen exe only shipped the DirectShow backend, so WhatsApp/Teams support silently fell back in installed builds. The exe grew to ~57 MB to carry it.
-- Client now shows its version in the window title.
-- Cleaned up invalid-escape warnings in the virtual-camera registration script (output bytes unchanged).
-
-### Validation
-- Android: builds clean (`assembleRelease` in CI).
-- Windows: client self-test against the mock phone server passes 12/12 (MJPEG + H.264 decode, discovery, controls, rotate/mirror, codec sync).
-- Both runs as a gate in the GitHub Actions release pipeline.
-
-### Known limitations (by design)
-- Streaming has no PIN/auth — anyone on the same Wi-Fi can connect (same model as DroidCam).
-- The shared release keystore is committed for seamless sideload upgrades; replace it before any real distribution.
-- Windows audio needs `ffplay` (FFmpeg) installed; video works without it.
-- The virtual camera appears in WhatsApp/Teams only on Windows 11 22H2+ (Media Foundation backend); on older Windows it works in Discord/OBS/Chrome/Zoom etc.
+### Run it
+From `pc-client-native`: `npm start` (or rebuild the portable exe with
+`npm run build`).
 
 ---
 
-## v1.0.2 (2026-08-11)
+# OpenCam v1.5.3 — PC client overhaul, rotation fix, two-way settings sync
 
-Deep-audit fix batch — see the v1.1.0 notes (identical fix set; v1.1.0 is the same code with the release-notes pipeline added).
+This release focuses on the Windows PC client. It fixes the picture when the
+phone is held sideways, makes the phone and PC settings stay in sync (no more
+"locked" resolution/codec), and gives the PC app a proper control panel.
 
-## v1.0.1 (2026-08-10)
+## What changed
 
-- Fixed the PC client self-test on Python 3.13 (`threading.Thread.start()` name collision in the mock server).
-- Added Rotate (0/90/180/270°) + Mirror controls to the Windows client — fixes a sideways picture when the phone is held in landscape; applies to the preview and the virtual camera and persists across launches.
-- Fixed a config bug where reconnecting wiped the saved rotate/mirror state.
+### Windows PC client (pc-client/opencam_pc.py)
 
-## v1.0.0 (2026-08-10)
+- **Rotate control.** The phone streams a fixed portrait picture (the app is
+  locked to portrait), so holding the phone sideways showed a sideways video on
+  the PC. The client now has a **Rotate button (0/90/180/270°)** — press it (or
+  `R`) once when you hold the phone landscape and the video turns upright.
+  Screenshots respect the rotation too.
+- **New control panel.** The window now has Connection / Stream / Camera /
+  Actions sections: rotate, mirror, zoom, torch, camera flip, screenshot.
+- **More options.** **H.265 (HEVC)** added to the codec list (needs `av`),
+  resolutions up to **3840x2160 (4K)**, plus **FPS (15/24/30/60)** and a
+  **bitrate slider (1–50 Mbps)**.
+- **Control the phone from the PC.** Torch, zoom, flip camera, fps, bitrate and
+  audio are sent to the phone live (new `PUT /v1/settings` endpoint).
+- **Settings remembered** between runs (`%APPDATA%\OpenCamPC\settings.json`).
 
-- Restructured project: rewritten Java Android app (`io.opencam.webcam`) + Python Windows client (`windows-client/`) with a DirectShow virtual camera.
-- Android: MJPEG + H.264 + H.265 streaming, AAC audio, full camera control API, mDNS discovery, web remote at `/remote`, battery info.
-- Windows client: live preview, codec/quality sync with the phone, LAN scan, camera controls, virtual camera for Discord/OBS/Chrome.
+### Settings sync (both apps)
+
+- **The phone's settings are the source of truth.** The server no longer lets a
+  plain reconnect revert settings you changed in the app. Before, the PC client
+  re-sent its own fixed codec/resolution on every reconnect, so changing the
+  app to H.265 / 1080p was instantly undone ("locked"). Now app-side changes
+  stick, and the PC client follows them.
+- **The PC client follows the phone.** A new `GET /v1/status` endpoint reports
+  the phone's actual codec, resolution, fps, battery, zoom and version. The PC
+  client reads it on connect and every few seconds, syncs its dropdowns, shows
+  the live status (e.g. `1920x1080 MJPEG · 30 fps · battery 87% · phone v1.6.2`),
+  and decodes whatever codec the phone is actually streaming — even if you pick
+  a different one in the app while connected.
+- **Picking a codec/resolution in the PC client still works** — it is honored
+  as a genuine new request and switches the stream.
+
+## Notes
+
+- First connection uses the PC client's chosen codec/resolution; after that,
+  changes made on the phone stick until you pick something new on the PC.
+- Streaming and OBS compatibility are unchanged; the new endpoints are additive.
+- If the phone streams H.265 while the PC lacks the `av` package, the client
+  shows a clear hint instead of a black screen.
+
+## Build status
+
+`:app:compileDebugKotlin` passes; PC client wire-protocol tests pass.

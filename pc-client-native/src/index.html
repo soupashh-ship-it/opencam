@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenCam Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Controls -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>
+            <circle cx="12" cy="13" r="3"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <h1>OpenCam</h1>
+          <span class="badge-tag">STUDIO PRO</span>
+        </div>
+      </div>
+
+      <!-- Connection Panel -->
+      <div class="card glass-panel">
+        <div class="card-header">
+          <h2>Connection</h2>
+          <div id="connection-dot" class="dot disconnected"></div>
+        </div>
+
+        <div class="input-group">
+          <label for="phone-ip">Phone IP Address</label>
+          <input type="text" id="phone-ip" placeholder="e.g. 192.168.1.42" />
+        </div>
+
+        <div class="input-group">
+          <label for="phone-port">Port</label>
+          <input type="text" id="phone-port" value="4747" placeholder="4747" />
+        </div>
+
+        <div class="button-grid">
+          <button id="btn-connect" class="btn btn-primary" title="Connect to the phone (Q)">
+            <span id="btn-connect-text">Connect Stream</span>
+          </button>
+          <button id="btn-scan" class="btn btn-outline">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            Scan Wi-Fi
+          </button>
+        </div>
+      </div>
+
+      <!-- Discord & OBS Integration Guide Card -->
+      <div class="card glass-panel integration-card">
+        <div class="card-header">
+          <h2>Discord & OBS Setup Guide</h2>
+        </div>
+        <div class="integration-copy">
+          <p style="margin: 0 0 6px 0; font-weight: 600; color: #60a5fa;">Method 1: OBS Virtual Camera (Recommended)</p>
+          <ol style="margin: 0 0 10px 0; padding-left: 16px;">
+            <li>Open <b>OBS Studio</b> &rarr; add <b>Window Capture</b> (select OpenCam Studio).</li>
+            <li>Click <b>Start Virtual Camera</b> in OBS bottom-right panel.</li>
+            <li>In <b>Discord</b> &rarr; <b>Voice &amp; Video</b>, select <b>OBS Virtual Camera</b>!</li>
+          </ol>
+          <p style="margin: 0 0 6px 0; font-weight: 600; color: #34d399;">Method 2: DroidCam Video</p>
+          <ol style="margin: 0; padding-left: 16px;">
+            <li>Open <b>DroidCam Client</b> &rarr; connect to phone IP on port <b>4747</b>.</li>
+            <li>In <b>Discord</b> &rarr; <b>Voice &amp; Video</b>, select <b>DroidCam Video</b>!</li>
+          </ol>
+        </div>
+      </div>
+
+      <!-- Video Settings Panel -->
+      <div class="card glass-panel">
+        <div class="card-header">
+          <h2>Stream Format</h2>
+        </div>
+
+        <div class="input-group">
+          <label for="select-codec">Codec</label>
+          <select id="select-codec">
+            <option value="jpg" selected>MJPEG (Desktop Preview)</option>
+          </select>
+          <span class="field-hint">The built-in Windows preview uses MJPEG for deterministic decoding. OBS can still use H.264 / H.265 from the phone directly.</span>
+        </div>
+
+        <div class="input-group">
+          <label for="select-res">Resolution</label>
+          <select id="select-res">
+            <option value="1920x1080" selected>1920 x 1080 (1080p Full HD)</option>
+            <option value="2560x1440">2560 x 1440 (2K QHD)</option>
+            <option value="1280x720">1280 x 720 (720p HD)</option>
+            <option value="3840x2160">3840 x 2160 (4K UHD)</option>
+          </select>
+        </div>
+
+        <div class="input-group">
+          <div class="label-with-value">
+            <label for="slider-fps">Target FPS</label>
+            <span id="fps-val">30</span>
+          </div>
+          <input type="range" id="slider-fps" min="15" max="60" value="30" step="5" />
+        </div>
+
+        <div class="input-group">
+          <div class="label-with-value">
+            <label for="slider-bitrate">Bitrate</label>
+            <span id="bitrate-val">20 Mbps</span>
+          </div>
+          <input type="range" id="slider-bitrate" min="2" max="60" value="20" step="2" />
+        </div>
+      </div>
+
+      <!-- Camera Controls Panel -->
+      <div class="card glass-panel">
+        <div class="card-header">
+          <h2>Camera Controls</h2>
+        </div>
+
+        <div class="input-group">
+          <div class="label-with-value">
+            <label for="slider-zoom">Zoom Level</label>
+            <span id="zoom-val">1.0x</span>
+          </div>
+          <input type="range" id="slider-zoom" min="1.0" max="8.0" value="1.0" step="0.1" />
+        </div>
+
+        <div class="button-grid">
+          <button id="btn-torch" class="btn btn-outline">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            Torch
+          </button>
+          <button id="btn-flip" class="btn btn-outline">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 9v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9"/><path d="M9 22V12h6v10"/><path d="M2 10.6L12 2l10 8.6"/></svg>
+            Flip Lens
+          </button>
+        </div>
+
+        <div class="button-grid" style="margin-top: 8px;">
+          <button id="btn-rotate" class="btn btn-outline">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6"/><path d="M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            <span id="rotate-label">Rotate: 0°</span>
+          </button>
+          <button id="btn-mirror" class="btn btn-outline">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="8 21 3 21 3 16"/></svg>
+            Mirror
+          </button>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions-group" style="display: flex; flex-direction: column; gap: 8px;">
+        <button id="btn-snapshot" class="btn btn-accent" title="Save the current frame as a PNG (S)">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+          Take HD Snapshot
+        </button>
+        <button id="btn-vcam" class="btn btn-outline" style="font-size: 12px;">
+          🎥 Register Camera (Discord / OBS)
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Viewport -->
+    <main class="viewport-area">
+      <!-- Top HUD Stats Bar -->
+      <header class="hud-header glass-panel">
+        <div class="hud-item">
+          <span class="hud-label">STATUS</span>
+          <span id="hud-status-text" class="hud-value active">Ready to connect</span>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">LIVE FPS</span>
+          <span id="hud-fps" class="hud-value highlight">0 FPS</span>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">RESOLUTION</span>
+          <span id="hud-res" class="hud-value">1920x1080</span>
+        </div>
+        <div class="hud-item">
+          <span class="hud-label">BATTERY</span>
+          <span id="hud-battery" class="hud-value">--%</span>
+        </div>
+        <div class="hud-item" style="display: flex; gap: 6px;">
+          <button id="btn-clean" class="btn btn-outline" style="padding: 6px 12px; font-size: 11px;">
+            📺 Clean Feed (OBS Mode)
+          </button>
+          <button id="btn-pin" class="btn btn-outline" style="padding: 6px 12px; font-size: 11px;">
+            📌 Always on Top
+          </button>
+        </div>
+      </header>
+
+      <!-- Video Canvas Container -->
+      <div class="canvas-wrapper">
+        <canvas id="video-canvas"></canvas>
+        <div id="canvas-placeholder" class="placeholder-overlay">
+          <div class="pulse-ring"></div>
+          <svg class="cam-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <p class="placeholder-title">No Video Feed</p>
+          <p class="placeholder-sub">Click <strong style="color: var(--accent-cyan)">Connect Stream</strong> to start phone camera sync</p>
+        </div>
+      </div>
+
+      <!-- Status Toast -->
+      <div id="toast" class="toast hidden"></div>
+    </main>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

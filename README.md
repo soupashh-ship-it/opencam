@@ -1,139 +1,153 @@
-# OpenCam
+# OpenCam — free wireless phone webcam for OBS
 
-An **original, open-source** Android app that turns your phone into a Wi-Fi webcam for
-[OBS Studio](https://obsproject.com/) — compatible with the same on-the-wire protocol family that
-the DroidCam OBS plugin and classic MJPEG clients speak, so existing desktop tools can connect.
+OpenCam turns your Android phone into a high-quality **wireless (or USB) webcam**
+that works directly with the
+[droidcam-obs-plugin](https://github.com/dev47apps/droidcam-obs-plugin) — the
+same plugin the commercial *DroidCam* app uses. No plugin to write, no paid app
+to unlock: **every feature is free and built in.**
 
+| Feature | OpenCam |
+|---|---|
+| Video: H.264, HEVC (H.265), MJPEG | ✅ |
+| Resolution up to 4K (camera dependent) | ✅ |
+| FPS up to 60 (camera dependent) | ✅ |
+| Audio streaming (AAC) | ✅ |
+| Auto-discovery via mDNS (`_droidcamobs._tcp`) | ✅ |
+| Wired USB mode (plugin does `adb forward` itself) | ✅ |
+| Torch / flashlight | ✅ |
+| Pinch & slider zoom | ✅ |
+| Tap-to-focus | ✅ |
+| Front / back / wide / tele lenses | ✅ |
+| Mirror effect (flip stream + preview) | ✅ |
+| Battery & tally reporting to OBS | ✅ |
+| Background streaming (screen off) | ✅ |
+| QR code with connection info | ✅ |
 
-## Why
+## Documentation
 
-Commercial phone-webcam apps charge for basic functionality (HD video, remote control, etc.).
-OpenCam is free, auditable, dependency-free (zero AndroidX, zero ad SDKs), and easy to build from
-source.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the app works under the hood
+- [PROTOCOL.md](PROTOCOL.md) — the exact wire protocol it implements
+- [VALIDATION.md](VALIDATION.md) — checks performed for the v1.4.0 repair
+- [AUDIT_REMEDIATION.md](AUDIT_REMEDIATION.md) — disposition of all 38 supplied findings
+- [SECURITY.md](SECURITY.md) — signing-key rotation and network-risk notes
 
-## Features
+## How it works
 
-- **Wi-Fi HTTP server** on a configurable port (default **4747**)
-- **Video**
-  - MJPEG over HTTP: `GET /video` — works in browsers, `ffplay`, VLC, and OBS via
-    *Media Source → URL*
-  - Modern framed streams for the OBS plugin / DroidCam-style clients:
-    `GET /v5/video/{jpg|avc|hevc}/{W}x{H}?client=N` and `GET /v4/video/...` — 12-byte
-    `[pts:8 LE][len:4 LE]` framing
-  - Legacy OBS-plugin framing via `CMD /v3/video/...` (client=600)
-  - H.264 (AVC) and H.265 (HEVC) via `MediaCodec`, JPEG via `ImageReader` + `YuvImage`
-- **Audio**: AAC-LC (`MediaCodec`), `GET /v2/audio` and `GET /v1/audio.2`, raw AAC frames in the
-  same 12-byte framing
-- **Control API**: zoom, exposure/EV, ISO, shutter, white balance (+lock), autofocus (+manual
-  focus), torch, mic mute, camera switching, tally, battery — JSON `GET /v1/camera/info` etc.
-- **mDNS discovery**: `_droidcamobs._tcp.` via `NsdManager`
-- **Web remote page** served at `/remote`
-- Zero third-party dependencies — plain Android framework APIs (minSdk 24)
+The phone runs a small TCP server (default port **4747**) implementing the
+DroidCam **v5** wire protocol. The OBS plugin connects to it, requests a video
+format, and receives a framed H.264/HEVC/MJPEG stream plus an AAC audio stream.
+Discovery happens over mDNS. See [PROTOCOL.md](PROTOCOL.md) for the exact wire
+format.
 
 ## Build
 
-Open in Android Studio (it will offer to generate the Gradle wrapper) or:
+Requirements: JDK 17+, Android SDK (platform 36 / build-tools 36).
 
 ```bash
-cd OpenCam
-gradle wrapper            # or: use Android Studio's wrapper fix
-./gradlew assembleDebug
+# open the project in Android Studio, or from the command line:
+./gradlew :app:assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-No network dependencies beyond the Android Gradle Plugin; the app code itself uses only
-`android.*` APIs. You can even type-check the sources without Gradle:
+> On Windows use `gradlew.bat`.
 
-```bash
-javac --release 8 -classpath "$ANDROID_HOME/platforms/android-34/android.jar" \
-  $(find app/src/main/java -name '*.java')
+## Install & use
+
+1. Install the APK on your phone, grant **Camera** and **Microphone**
+   permissions (and notification permission on Android 13+).
+2. Make sure the phone and PC are on the **same Wi-Fi network**.
+3. Connect from your PC in one of two ways:
+   - **Standalone PC app (no OBS):** run the OpenCam Studio PC client
+     ([`pc-client-native/`](pc-client-native/)). It discovers the phone over
+     mDNS (or take its IP from the app/QR) and shows the camera in a window —
+     with mirror, audio, screenshots and live phone controls. Run it with
+     `npm start` from `pc-client-native/`, or build a portable Windows `.exe`
+     with `npm run build`.
+   - **OBS:** install the **DroidCam OBS plugin** from
+     [droidcam.app/obs](https://droidcam.app/obs) (OBS → Tools → "DroidCam"
+     install helper). In OBS: **+ → DroidCam → Refresh** — your phone appears
+     as `OpenCam-XXXX ... (WiFi)`. Select it and click **Activate**.
+     - No discovery? Enter the phone's **IP** and **port 4747** manually (shown
+       in the app; QR button in the app shows the same info).
+4. Optionally enable **Enable Audio** in the plugin properties.
+
+### Mirror effect
+
+The mirror toggle (bottom control bar) flips the stream left/right — handy for
+front-camera calls and presentations. It mirrors both the phone preview and the
+video sent to the PC so what you see is what the PC receives. The PC client has
+its own mirror toggle too.
+
+### USB (wired) mode
+
+Enable **USB debugging** on the phone, plug it in, and install the Android
+platform tools. The plugin auto-detects ADB devices and sets up the port
+forward itself — just pick the device in the plugin's device list.
+
+### Streaming with the screen off
+
+OpenCam runs as a foreground service, so the stream keeps working when you
+switch apps or turn the screen off. On some OEMs you must also
+**disable battery optimization** for OpenCam (Settings → Apps → OpenCam →
+Battery → Unrestricted), otherwise the OS may kill background streaming.
+
+## Troubleshooting
+
+- **Plugin can't find the phone** → same Wi-Fi? AP isolation enabled on the
+  router? Try entering the IP manually. Some routers block mDNS between
+  clients.
+- **No video after connecting** → check the app's status line for the active
+  codec/resolution; if it shows an error, the camera may not support the
+  requested resolution (pick a smaller one).
+- **Video orientation looks stale** → rotate once after activation or reconnect
+  the OBS source. OpenCam observes 0°/90°/180°/270° display changes and rebuilds
+  the encoded stream; the plugin reconnects to the new dimensions.
+- **Audio missing** → enable *Enable Audio* in the plugin properties.
+- **Stream stutters** → lower the resolution/fps or bitrate in the app
+  settings.
+- **Port already in use** → change the port in OpenCam settings (e.g. 4748)
+  and use that port in the plugin.
+
+## Security
+
+OpenCam has **no authentication** — like DroidCam, anyone on the same network
+can connect to the stream port and pull your camera/mic feed. Only run it on
+networks you trust, and stop the stream when you're done (toggle in the app or
+via the notification).
+
+## Releases & CI
+
+Every pushed tag starting with `v` triggers a GitHub Actions workflow that
+builds, signs, verifies and publishes the APK. All four signing secrets are
+required; the workflow and Gradle release tasks fail instead of publishing an
+unsigned artifact. Local debug builds do not need signing material.
+
+- Workflow: [.github/workflows/release.yml](.github/workflows/release.yml)
+- Latest release: <https://github.com/soupashh-ship-it/opencam/releases/latest>
+
+## License
+
+[MIT](LICENSE) © soupashh-ship-it
+
+## License / ethics
+
+OpenCam is an original, clean-room implementation of the *wire protocol* that
+the GPL-licensed droidcam-obs-plugin speaks; it contains no code from DroidCam.
+The name "DroidCam" belongs to its owner — OpenCam is not affiliated with it.
+Use it for your own streaming setups. ⚠️ Respect local laws and the privacy of
+people around you when using any camera app.
+
+## Project layout
+
 ```
+app/src/main/java/com/opencam/
+├── server/     StreamServer + Protocol (the OBS-plugin wire protocol)
+├── encode/     H.264/HEVC (MediaCodec), AAC (MediaCodec), Annex-B conversion
+├── camera/     Camera2 controller (session, zoom, torch, focus, exposure)
+├── stream/     StreamManager — orchestrates camera + encoders + server + mDNS
+├── discovery/  mDNS advertisement of _droidcamobs._tcp
+├── service/    Foreground service for background streaming
+└── ui/         Jetpack Compose UI (preview, controls, settings, QR)
 
-Release APKs are signed with the shared key in [`signing/`](signing/) (committed on purpose so
-local builds and GitHub Actions produce the same signature — replace it with your own before
-publishing to any store).
-
-## CI / Releases
-
-* **Actions → CI** — on every push to `main` it builds the signed release APK and runs the
-  Windows client's self-test against the mock phone.
-* **Actions → Release** — pushing a `v*` tag (e.g. `git tag v0.1.1 && git push origin v0.1.1`)
-  builds the signed APK **and** the standalone Windows client exe, then publishes a
-  GitHub Release with both attached.
-* **Releases** — ready-to-install APK + `OpenCamClient.exe`: <https://github.com/soupashh-ship-it/opencam/releases>
-
-## Usage
-
-1. Install, grant **Camera**, **Microphone** (and **Notifications** on Android 13+).
-2. Connect phone and PC to the **same Wi-Fi**.
-3. Tap **Start Streaming** — the app shows `http://<ip>:<port>`.
-4. In OBS: *Sources → Add → Media Source → new URL* `http://<ip>:<port>/video`.
-   Or use the DroidCam OBS plugin pointing at the same address.
-
-## Architecture
-
+pc-client-native/  OpenCam Studio — native Windows PC client (Electron)
 ```
-MainActivity (preview + controls)
-      │ bind
-StreamService (foreground, camera + mic)
-      ├─ HttpServer (ServerSocket :4747, keep-alive)
-      │    └─ ControlApi (route table) → Service actions
-      ├─ CameraController (Camera2, HandlerThread)
-      │    ├─ MjpegProducer (ImageReader → JPEG)
-      │    └─ VideoEncoderPipeline (MediaCodec AVC/HEVC)
-      ├─ AudioStream (AudioRecord → MediaCodec AAC-LC)
-      ├─ FrameSink implementations:
-      │    ├─ FramedSink  (12-byte pts+len framing — modern clients)
-      │    ├─ MjpegSink   (multipart/x-mixed-replace — classic /video)
-      │    └─ LegacySink  (9-byte header + 4-byte length — CMD /v3)
-      └─ Discovery (NsdManager _droidcamobs._tcp.)
-```
-
-## Wire protocol cheat-sheet
-
-| Endpoint | Type | Meaning |
-|---|---|---|
-| `GET /video` | MJPEG multipart | classic webcam stream (single client) |
-| `GET /v5/video/{codec}/{W}x{H}?client=N` | framed | modern stream; codec ∈ jpg/avc/hevc |
-| `CMD /v3/video/{codec}/{W}x{H}` | framed-legacy | OBS plugin classic protocol |
-| `GET /v2/audio` · `/v1/audio.2` | framed AAC | audio stream |
-| `GET /v1/camera/info` | JSON | camera state (zoom/ev/iso/ss/wb/af/torch/mute…) |
-| `PUT /v3/camera/{zoom,ev,ss,iso,mf}/{v}` | control | camera controls |
-| `PUT /v1/tally?tally={idle,preview,program}` | control | OBS tally light |
-| `GET /v1/phone/battery_info` | JSON | battery level/state |
-
-Framed packets: `[int64 LE pts µs][int32 LE length][payload]`; stream end = `(-1L, -1)`.
-MJPEG boundary: `--dcmjpeg` (established interop constant). Legacy magic: `F5 E8 B5 D0`.
-
-## Windows desktop client
-
-A DroidCam-style desktop viewer/controller lives in [`windows-client/`](windows-client/):
-live MJPEG preview, AAC microphone audio (via ffplay), camera switch / torch / mute,
-zoom / EV / white-balance sliders, and battery display. No device needed to test it —
-`python opencam_client.py --selftest` runs the full protocol against a built-in mock phone.
-
-```bash
-cd windows-client
-python opencam_client.py          # GUI
-```
-
-- **Scan** button — auto-discovers OpenCam phones on your LAN (subnet probe of port 4747,
-  dependency-free; pick a phone from the dropdown to connect).
-- **Virtual cam** button — exposes the phone stream as a real Windows camera
-  (**"OpenCam Virtual Camera"**), selectable in Discord, Zoom, WhatsApp, Google Meet and any
-  app that lists webcams — the same mechanism DroidCam Client uses. One-time admin
-  registration (a UAC prompt) installs a bundled DirectShow filter (see
-  [`windows-client/vcam/`](windows-client/vcam/)); after that, toggling **Virtual cam** while
-  connected feeds the phone's frames to the device. Add `--register-vcam` to install it from
-  the command line, or use the `register_vcam.bat` / `unregister_vcam.bat` helpers.
-- Double-click `run_client.bat` for a one-click source launch (installs Pillow if needed).
-- `build_exe.bat` builds a standalone `dist/OpenCamClient.exe` (PyInstaller, no Python
-  required on the target machine; the build runs the self-test before shipping).
-
-## Roadmap / TODOs
-
-- [x] Windows desktop client (preview, audio, camera controls)
-- [ ] Native JPEG encoder (or `ImageReader(JPEG)`) for high-FPS MJPEG at >1080p
-- [ ] Multiple simultaneous video clients
-- [ ] OBS browser-source status overlay (tally light UI)
-- [ ] USB/ADB transport (like the desktop companion apps)
-- [ ] WebRTC low-latency preview
