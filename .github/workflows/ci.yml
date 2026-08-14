@@ -36,8 +36,8 @@ jobs:
           if-no-files-found: error
 
   pc-studio:
-    name: OpenCam Studio Wire Tests
-    runs-on: ubuntu-latest
+    name: OpenCam Studio Tests
+    runs-on: windows-latest
     timeout-minutes: 10
     defaults:
       run:

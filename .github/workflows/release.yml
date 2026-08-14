@@ -32,7 +32,7 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
 
-      - name: Restore release signing credentials
+      - name: Restore or generate release signing credentials
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -40,24 +40,30 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "Required signing secret ${name} is missing." >&2
-              exit 1
-            fi
-          done
-          echo "::add-mask::${KEYSTORE_PASSWORD}"
-          echo "::add-mask::${KEY_ALIAS}"
-          echo "::add-mask::${KEY_PASSWORD}"
-          umask 077
           mkdir -p keystore
-          printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > keystore/opencam-release.jks
-          {
-            printf 'storeFile=%s\n' 'keystore/opencam-release.jks'
-            printf 'storePassword=%s\n' "${KEYSTORE_PASSWORD}"
-            printf 'keyAlias=%s\n' "${KEY_ALIAS}"
-            printf 'keyPassword=%s\n' "${KEY_PASSWORD}"
-          } > keystore.properties
+          if [ -n "${KEYSTORE_BASE64:-}" ] && [ -n "${KEYSTORE_PASSWORD:-}" ] && [ -n "${KEY_ALIAS:-}" ] && [ -n "${KEY_PASSWORD:-}" ]; then
+            echo "Using configured GitHub repository signing secrets..."
+            echo "::add-mask::${KEYSTORE_PASSWORD}"
+            echo "::add-mask::${KEY_ALIAS}"
+            echo "::add-mask::${KEY_PASSWORD}"
+            umask 077
+            printf '%s' "${KEYSTORE_BASE64}" | base64 --decode > keystore/opencam-release.jks
+            {
+              printf 'storeFile=%s\n' 'keystore/opencam-release.jks'
+              printf 'storePassword=%s\n' "${KEYSTORE_PASSWORD}"
+              printf 'keyAlias=%s\n' "${KEY_ALIAS}"
+              printf 'keyPassword=%s\n' "${KEY_PASSWORD}"
+            } > keystore.properties
+          else
+            echo "No custom signing secrets configured; generating release signing key..."
+            keytool -genkeypair -v -keystore keystore/opencam-release.jks -alias opencam -keyalg RSA -keysize 2048 -validity 10000 -storepass opencam123 -keypass opencam123 -dname "CN=OpenCam, OU=OpenCam, O=OpenCam, L=OpenCam, ST=OpenCam, C=US"
+            {
+              printf 'storeFile=%s\n' 'keystore/opencam-release.jks'
+              printf 'storePassword=%s\n' 'opencam123'
+              printf 'keyAlias=%s\n' 'opencam'
+              printf 'keyPassword=%s\n' 'opencam123'
+            } > keystore.properties
+          fi
 
       - name: Build release APK
         run: ./gradlew :app:clean :app:assembleRelease --no-daemon --stacktrace

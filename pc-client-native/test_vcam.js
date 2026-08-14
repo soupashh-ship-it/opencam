@@ -15,6 +15,12 @@
 
 'use strict';
 
+// Skip gracefully on non-Windows platforms (e.g. Linux CI runners)
+if (process.platform !== 'win32') {
+  console.log('SKIPPING: Windows Media Foundation & DirectShow tests (Windows only)');
+  process.exit(0);
+}
+
 const fs = require('fs');
 const path = require('path');
 const { execSync, spawnSync } = require('child_process');
