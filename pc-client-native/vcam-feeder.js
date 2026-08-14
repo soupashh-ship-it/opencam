@@ -7,14 +7,86 @@
 
 const path = require('path');
 const fs = require('fs');
-const { spawn, execSync, exec } = require('child_process');
+const { spawn, spawnSync, execSync, exec } = require('child_process');
 
-const VCAM_DIR = path.join(__dirname, 'vcam');
-const FEEDER_EXE = path.join(VCAM_DIR, 'vcam_feeder.exe');
-const FEEDER_SOURCE = path.join(VCAM_DIR, 'OpenCamVirtualCamFeeder.cs');
+// Bundled assets directory (may reside inside app.asar when packaged)
+const BUNDLED_VCAM_DIR = path.join(__dirname, 'vcam');
 
-/** Ensures the native feeder binary is compiled and up-to-date. */
+// Permanent, physical runtime directory on disk for native binaries and COM registration
+const LOCAL_APP_DATA = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || 'C:\\Users\\Default', 'AppData', 'Local');
+const RUNTIME_VCAM_DIR = path.join(LOCAL_APP_DATA, 'OpenCamStudio', 'vcam');
+
+// Export VCAM_DIR as the permanent runtime directory
+const VCAM_DIR = RUNTIME_VCAM_DIR;
+const FEEDER_EXE = path.join(RUNTIME_VCAM_DIR, 'vcam_feeder.exe');
+const FEEDER_SOURCE = path.join(RUNTIME_VCAM_DIR, 'OpenCamVirtualCamFeeder.cs');
+
+/**
+ * Extracts and synchronizes native helper binaries to permanent local disk storage (%LOCALAPPDATA%\OpenCamStudio\vcam).
+ * When running packaged inside app.asar, regsvr32 and native process execution require real physical files.
+ */
+function extractVcamBinaries() {
+  try {
+    if (!fs.existsSync(RUNTIME_VCAM_DIR)) {
+      fs.mkdirSync(RUNTIME_VCAM_DIR, { recursive: true });
+    }
+
+    const filesToExtract = [
+      'vcam_feeder.exe',
+      'obs-virtualcam-module64.dll',
+      'obs-virtualcam-module32.dll',
+      'register_vcam.bat',
+      'unregister_vcam.bat',
+      'OpenCamVirtualCamFeeder.cs',
+    ];
+
+    for (const filename of filesToExtract) {
+      const srcPath = path.join(BUNDLED_VCAM_DIR, filename);
+      const dstPath = path.join(RUNTIME_VCAM_DIR, filename);
+
+      if (fs.existsSync(srcPath)) {
+        let shouldCopy = !fs.existsSync(dstPath);
+        if (!shouldCopy) {
+          try {
+            const srcStat = fs.statSync(srcPath);
+            const dstStat = fs.statSync(dstPath);
+            if (srcStat.size !== dstStat.size || srcStat.mtimeMs > dstStat.mtimeMs) {
+              shouldCopy = true;
+            }
+          } catch (_) {
+            shouldCopy = true;
+          }
+        }
+
+        if (shouldCopy) {
+          try {
+            const content = fs.readFileSync(srcPath);
+            fs.writeFileSync(dstPath, content);
+            try {
+              const srcStat = fs.statSync(srcPath);
+              fs.utimesSync(dstPath, srcStat.atime, srcStat.mtime);
+            } catch (_) {}
+          } catch (copyErr) {
+            // If file is locked by a running instance (EBUSY / EPERM), fallback gracefully if dest exists
+            if (!fs.existsSync(dstPath)) {
+              console.warn(`Could not extract ${filename}:`, copyErr.message);
+            }
+          }
+        }
+      }
+    }
+    return true;
+  } catch (err) {
+    console.error('Failed to extract virtual camera runtime binaries:', err);
+    return false;
+  }
+}
+
+/** Ensures the native feeder binary is compiled, extracted, and up-to-date. */
 function ensureFeederBinary() {
+  // 1. Always extract bundled binaries to permanent physical runtime location first
+  extractVcamBinaries();
+
   const cscPaths = [
     path.join(process.env.windir || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe'),
     path.join(process.env.windir || 'C:\\Windows', 'Microsoft.NET', 'Framework', 'v4.0.30319', 'csc.exe'),
@@ -25,7 +97,7 @@ function ensureFeederBinary() {
     return fs.existsSync(FEEDER_EXE);
   }
 
-  // Recompile if binary is missing or source is newer
+  // Recompile in RUNTIME_VCAM_DIR if binary is missing or source is newer
   let needsCompile = !fs.existsSync(FEEDER_EXE);
   if (!needsCompile) {
     try {
@@ -43,7 +115,7 @@ function ensureFeederBinary() {
 
   try {
     const cmd = `"${csc}" /nologo /unsafe /optimize /platform:x64 /r:System.Drawing.dll /out:"${FEEDER_EXE}" "${FEEDER_SOURCE}"`;
-    execSync(cmd, { cwd: VCAM_DIR, stdio: 'ignore', timeout: 15000 });
+    execSync(cmd, { cwd: RUNTIME_VCAM_DIR, stdio: 'ignore', timeout: 15000 });
     return fs.existsSync(FEEDER_EXE);
   } catch (err) {
     console.error('Failed to compile virtual camera feeder binary:', err);
@@ -86,27 +158,32 @@ class VirtualCamFeeder {
     this.droppedFrames = 0;
 
     try {
-      this.process = spawn(FEEDER_EXE, ['--feed', String(width), String(height), String(fps)], {
-        cwd: VCAM_DIR,
+      const child = spawn(FEEDER_EXE, ['--feed', String(width), String(height), String(fps)], {
+        cwd: RUNTIME_VCAM_DIR,
         stdio: ['pipe', 'ignore', 'pipe'],
         windowsHide: true,
       });
 
-      if (this.process.stdin) {
-        this.process.stdin.on('error', (err) => {
+      if (child.stdin) {
+        child.stdin.on('error', (_err) => {
           // Swallow EPIPE / write errors on stdin during shutdown/restart
         });
       }
 
-      this.process.on('error', (err) => {
+      child.on('error', (err) => {
         console.error('Virtual camera feeder process error:', err);
-        this.process = null;
+        if (this.process === child) {
+          this.process = null;
+        }
       });
 
-      this.process.on('exit', () => {
-        this.process = null;
+      child.on('exit', () => {
+        if (this.process === child) {
+          this.process = null;
+        }
       });
 
+      this.process = child;
       return true;
     } catch (err) {
       console.error('Failed to spawn virtual camera feeder process:', err);
@@ -175,75 +252,127 @@ function getVirtualCameraStatus() {
   }
 
   try {
-    const out = execSync(`"${FEEDER_EXE}" --status`, { cwd: VCAM_DIR, encoding: 'utf8', timeout: 5000 }).trim();
-    return JSON.parse(out);
+    const res = spawnSync(FEEDER_EXE, ['--status'], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8', timeout: 5000 });
+    const stdout = (res.stdout || '').trim();
+    const jsonMatch = stdout.match(/\{[\s\S]*"registered"[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(stdout);
   } catch (err) {
     return { registered: false, directShow: false, mediaFoundation: false, error: err.message };
   }
+}
+
+/** Build PowerShell base64 encoded command for robust UAC elevation with space-safe argument passing. */
+function buildElevatedPowerShellCommand(feederExe, action, targetDir) {
+  const cleanFeeder = (feederExe || '').replace(/[\\/]+$/, '');
+  const cleanDir = (targetDir || '').replace(/[\\/]+$/, '');
+  const escapedFeeder = cleanFeeder.replace(/'/g, "''");
+  const escapedDir = cleanDir.replace(/'/g, "''");
+  const psScript = [
+    `$ErrorActionPreference = 'Stop'`,
+    `try {`,
+    `  $p = Start-Process -FilePath '${escapedFeeder}' -ArgumentList @('${action}', '"${escapedDir}"') -Verb RunAs -Wait -PassThru`,
+    `  if ($p) { exit $p.ExitCode } else { exit 1 }`,
+    `} catch {`,
+    `  exit 1223`,
+    `}`
+  ].join('\r\n');
+
+  const b64 = Buffer.from(psScript, 'utf16le').toString('base64');
+  return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${b64}`;
 }
 
 /** Register Virtual Camera in DirectShow and Media Foundation. */
 function registerVirtualCamera(elevateIfFailed = true) {
   ensureFeederBinary();
 
-  // Try direct registration first (succeeds for HKCU + if running elevated)
-  try {
-    const out = execSync(`"${FEEDER_EXE}" --register "${VCAM_DIR}"`, { cwd: VCAM_DIR, encoding: 'utf8', timeout: 10000 });
-    const status = getVirtualCameraStatus();
-    if (status.registered) {
-      return { success: true, message: 'OpenCam Virtual Camera registered successfully!', status };
+  // If elevation is not requested (e.g. automated tests or already elevated execution), run direct
+  if (!elevateIfFailed) {
+    try {
+      spawnSync(FEEDER_EXE, ['--register', RUNTIME_VCAM_DIR], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8', timeout: 10000 });
+      const status = getVirtualCameraStatus();
+      return {
+        success: !!(status && status.registered),
+        message: (status && status.registered) ? 'OpenCam Virtual Camera registered successfully!' : 'Registration failed',
+        status
+      };
+    } catch (err) {
+      return { success: false, message: err.message, status: getVirtualCameraStatus() };
     }
-  } catch (_) {}
-
-  // If HKLM registration requires elevation, prompt UAC via PowerShell
-  if (elevateIfFailed) {
-    return new Promise((resolve) => {
-      const psCmd = `powershell -Command "Start-Process -FilePath '${FEEDER_EXE}' -ArgumentList '--register \\"${VCAM_DIR}\\"' -Verb RunAs -Wait"`;
-      exec(psCmd, { timeout: 30000 }, (err) => {
-        const status = getVirtualCameraStatus();
-        if (!err && status.registered) {
-          resolve({ success: true, message: 'OpenCam Virtual Camera registered successfully with Administrator privileges!', status });
-        } else {
-          resolve({ success: status.registered, message: status.registered ? 'Registered successfully' : 'Registration cancelled or failed', status });
-        }
-      });
-    });
   }
 
-  return { success: false, message: 'Registration failed' };
+  // When elevation is requested, elevate with UAC prompt to register HKLM and DeviceClasses
+  return new Promise((resolve) => {
+    const psCmd = buildElevatedPowerShellCommand(FEEDER_EXE, '--register', RUNTIME_VCAM_DIR);
+    exec(psCmd, { timeout: 45000 }, (err) => {
+      const status = getVirtualCameraStatus();
+      if (!err && status && status.registered) {
+        resolve({ success: true, message: 'OpenCam Virtual Camera registered successfully with Administrator privileges!', status });
+      } else if (err && (err.code === 1223 || (err.message && err.message.includes('1223')))) {
+        resolve({ success: false, message: 'Administrator permission was cancelled. OpenCam Virtual Camera could not be registered.', status });
+      } else {
+        resolve({
+          success: !!(status && status.registered),
+          message: (status && status.registered) ? 'OpenCam Virtual Camera registered successfully!' : ((err && err.message) || 'Registration failed'),
+          status
+        });
+      }
+    });
+  });
 }
 
 /** Unregister Virtual Camera. */
 function unregisterVirtualCamera(elevateIfFailed = true) {
   ensureFeederBinary();
 
-  try {
-    execSync(`"${FEEDER_EXE}" --unregister "${VCAM_DIR}"`, { cwd: VCAM_DIR, encoding: 'utf8', timeout: 10000 });
-    const status = getVirtualCameraStatus();
-    if (!status.registered) {
-      return { success: true, message: 'OpenCam Virtual Camera unregistered successfully!', status };
+  if (!elevateIfFailed) {
+    try {
+      spawnSync(FEEDER_EXE, ['--unregister', RUNTIME_VCAM_DIR], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8', timeout: 10000 });
+      const status = getVirtualCameraStatus();
+      return {
+        success: !(status && status.registered),
+        message: !(status && status.registered) ? 'OpenCam Virtual Camera unregistered successfully!' : 'Unregistration failed',
+        status
+      };
+    } catch (err) {
+      return { success: false, message: err.message, status: getVirtualCameraStatus() };
     }
-  } catch (_) {}
-
-  if (elevateIfFailed) {
-    return new Promise((resolve) => {
-      const psCmd = `powershell -Command "Start-Process -FilePath '${FEEDER_EXE}' -ArgumentList '--unregister \\"${VCAM_DIR}\\"' -Verb RunAs -Wait"`;
-      exec(psCmd, { timeout: 30000 }, (err) => {
-        const status = getVirtualCameraStatus();
-        resolve({ success: !status.registered, message: !status.registered ? 'OpenCam Virtual Camera unregistered successfully' : 'Unregistration failed', status });
-      });
-    });
   }
 
-  return { success: false, message: 'Unregistration failed' };
+  return new Promise((resolve) => {
+    const psCmd = buildElevatedPowerShellCommand(FEEDER_EXE, '--unregister', RUNTIME_VCAM_DIR);
+    exec(psCmd, { timeout: 45000 }, (err) => {
+      const status = getVirtualCameraStatus();
+      const isUnregistered = !(status && status.registered);
+      if (err && (err.code === 1223 || (err.message && err.message.includes('1223')))) {
+        resolve({
+          success: false,
+          message: 'Administrator permission was cancelled. OpenCam Virtual Camera could not be unregistered.',
+          status
+        });
+      } else {
+        resolve({
+          success: isUnregistered,
+          message: isUnregistered ? 'OpenCam Virtual Camera unregistered successfully!' : 'Unregistration failed or cancelled',
+          status
+        });
+      }
+    });
+  });
 }
 
 module.exports = {
   VirtualCamFeeder,
+  extractVcamBinaries,
   ensureFeederBinary,
   getVirtualCameraStatus,
   registerVirtualCamera,
   unregisterVirtualCamera,
+  buildElevatedPowerShellCommand,
+  BUNDLED_VCAM_DIR,
+  RUNTIME_VCAM_DIR,
   VCAM_DIR,
   FEEDER_EXE,
   FEEDER_SOURCE,

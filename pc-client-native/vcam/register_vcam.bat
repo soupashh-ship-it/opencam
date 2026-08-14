@@ -11,7 +11,7 @@ cd /d "%~dp0"
 echo Requesting Administrator privileges to register OpenCam Virtual Camera...
 net session >nul 2>&1
 if %errorlevel% neq 0 (
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
@@ -21,18 +21,21 @@ if not exist "vcam_feeder.exe" (
     "%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /unsafe /optimize /platform:x64 /r:System.Drawing.dll /out:"vcam_feeder.exe" "OpenCamVirtualCamFeeder.cs"
 )
 
+set "VCAM_DIR=%~dp0"
+if "%VCAM_DIR:~-1%"=="\" set "VCAM_DIR=%VCAM_DIR:~0,-1%"
+
 echo [2/3] Registering DirectShow and Windows Media Foundation Virtual Camera...
 if exist "%windir%\System32\regsvr32.exe" (
-    if exist "obs-virtualcam-module64.dll" "%windir%\System32\regsvr32.exe" /s "%~dp0obs-virtualcam-module64.dll"
+    if exist "obs-virtualcam-module64.dll" "%windir%\System32\regsvr32.exe" /s "%VCAM_DIR%\obs-virtualcam-module64.dll"
 )
 if exist "%windir%\SysWOW64\regsvr32.exe" (
-    if exist "obs-virtualcam-module32.dll" "%windir%\SysWOW64\regsvr32.exe" /s "%~dp0obs-virtualcam-module32.dll"
+    if exist "obs-virtualcam-module32.dll" "%windir%\SysWOW64\regsvr32.exe" /s "%VCAM_DIR%\obs-virtualcam-module32.dll"
 ) else (
-    if exist "obs-virtualcam-module32.dll" "%windir%\System32\regsvr32.exe" /s "%~dp0obs-virtualcam-module32.dll"
+    if exist "obs-virtualcam-module32.dll" "%windir%\System32\regsvr32.exe" /s "%VCAM_DIR%\obs-virtualcam-module32.dll"
 )
 
 if exist "vcam_feeder.exe" (
-    "vcam_feeder.exe" --register "%~dp0"
+    "vcam_feeder.exe" --register "%VCAM_DIR%"
 )
 
 echo [3/3] Verifying registration...

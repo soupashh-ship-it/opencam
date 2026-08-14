@@ -9,6 +9,7 @@ const {
   registerVirtualCamera,
   unregisterVirtualCamera,
   getVirtualCameraStatus,
+  ensureFeederBinary,
 } = require('./vcam-feeder');
 
 let mainWindow = null;
@@ -377,7 +378,14 @@ ipcMain.handle('get-vcam-status', async () => {
 });
 
 // App Lifecycle
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  try {
+    ensureFeederBinary();
+  } catch (err) {
+    console.warn('Initial vcam binary extraction note:', err.message);
+  }
+  createWindow();
+});
 
 app.on('will-quit', () => {
   disconnectStream();

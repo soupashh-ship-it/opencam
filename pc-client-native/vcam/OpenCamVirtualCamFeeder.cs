@@ -567,6 +567,14 @@ namespace OpenCam.VirtualCamera
                 {
                     dllDir = AppDomain.CurrentDomain.BaseDirectory;
                 }
+                else
+                {
+                    dllDir = dllDir.Trim('"', '\'', ' ', '\t', '\r', '\n').TrimEnd('\\', '/');
+                    if (string.IsNullOrEmpty(dllDir))
+                    {
+                        dllDir = AppDomain.CurrentDomain.BaseDirectory;
+                    }
+                }
 
                 string dll64 = Path.Combine(dllDir, "obs-virtualcam-module64.dll");
                 string dll32 = Path.Combine(dllDir, "obs-virtualcam-module32.dll");
@@ -774,6 +782,14 @@ namespace OpenCam.VirtualCamera
                 {
                     dllDir = AppDomain.CurrentDomain.BaseDirectory;
                 }
+                else
+                {
+                    dllDir = dllDir.Trim('"', '\'', ' ', '\t', '\r', '\n').TrimEnd('\\', '/');
+                    if (string.IsNullOrEmpty(dllDir))
+                    {
+                        dllDir = AppDomain.CurrentDomain.BaseDirectory;
+                    }
+                }
 
                 string dll64 = Path.Combine(dllDir, "obs-virtualcam-module64.dll");
                 string dll32 = Path.Combine(dllDir, "obs-virtualcam-module32.dll");
@@ -894,7 +910,7 @@ namespace OpenCam.VirtualCamera
                 if (directShow && mediaFoundation) break;
             }
 
-            bool isRegistered = directShow;
+            bool isRegistered = directShow || mediaFoundation;
             Console.WriteLine(string.Format("{{\"registered\":{0},\"directShow\":{1},\"mediaFoundation\":{2},\"friendlyName\":\"OpenCam Virtual Camera\"}}",
                 isRegistered ? "true" : "false",
                 directShow ? "true" : "false",

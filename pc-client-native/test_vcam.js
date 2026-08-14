@@ -26,10 +26,13 @@ const path = require('path');
 const { execSync, spawnSync } = require('child_process');
 const {
   VirtualCamFeeder,
+  extractVcamBinaries,
   ensureFeederBinary,
   getVirtualCameraStatus,
   registerVirtualCamera,
   unregisterVirtualCamera,
+  buildElevatedPowerShellCommand,
+  RUNTIME_VCAM_DIR,
   VCAM_DIR,
   FEEDER_EXE,
   FEEDER_SOURCE,
@@ -80,17 +83,38 @@ class Program {
 }
 
 function testFeederBinary() {
-  console.log('\n--- 1. Feeder Binary Verification ---');
+  console.log('\n--- 1. Feeder Binary Verification & Extraction ---');
   const exists = ensureFeederBinary();
   check('vcam_feeder.exe exists and compiles successfully', exists && fs.existsSync(FEEDER_EXE));
+
+  const localAppData = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || 'C:\\Users\\Default', 'AppData', 'Local');
+  const expectedDir = path.join(localAppData, 'OpenCamStudio', 'vcam');
+  check('RUNTIME_VCAM_DIR points to permanent %LOCALAPPDATA%\\OpenCamStudio\\vcam', VCAM_DIR.toLowerCase() === expectedDir.toLowerCase());
+
+  check('obs-virtualcam-module64.dll extracted to runtime storage', fs.existsSync(path.join(VCAM_DIR, 'obs-virtualcam-module64.dll')));
+  check('obs-virtualcam-module32.dll extracted to runtime storage', fs.existsSync(path.join(VCAM_DIR, 'obs-virtualcam-module32.dll')));
+  check('register_vcam.bat extracted to runtime storage', fs.existsSync(path.join(VCAM_DIR, 'register_vcam.bat')));
+  check('unregister_vcam.bat extracted to runtime storage', fs.existsSync(path.join(VCAM_DIR, 'unregister_vcam.bat')));
 
   const exeMtime = fs.statSync(FEEDER_EXE).mtimeMs;
   const srcMtime = fs.statSync(FEEDER_SOURCE).mtimeMs;
   check('vcam_feeder.exe is up-to-date with source code', exeMtime >= srcMtime);
+
+  // Verify PowerShell UAC command generation handles paths with spaces and trailing slashes
+  const testSpacePath = 'C:\\Program Files\\OpenCam Studio Test\\vcam\\vcam_feeder.exe';
+  const testSpaceDir = 'C:\\Program Files\\OpenCam Studio Test\\vcam\\';
+  const psCmd = buildElevatedPowerShellCommand(testSpacePath, '--register', testSpaceDir);
+  check('PowerShell UAC elevation command is encoded safely', psCmd.startsWith('powershell.exe') && psCmd.includes('-EncodedCommand'));
+  const decodedScript = Buffer.from(psCmd.split(' -EncodedCommand ')[1], 'base64').toString('utf16le');
+  check('PowerShell UAC command strips trailing slash to avoid quote escape', !decodedScript.includes('\\"\''));
 }
 
 function testRegistrationAndSchema() {
   console.log('\n--- 2. DirectShow & Media Foundation Registration Schema ---');
+  // Test registration with trailing slash / quotes to verify argument resilience
+  const regDirectWithSlash = spawnSync(FEEDER_EXE, ['--register', `"${RUNTIME_VCAM_DIR}\\"`], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8' });
+  check('Feeder binary handles trailing slash in quotes without corrupting path', regDirectWithSlash.status === 0);
+
   const regRes = registerVirtualCamera(false);
   check('registerVirtualCamera returned success', regRes && (regRes.success || regRes.status));
 
@@ -98,6 +122,15 @@ function testRegistrationAndSchema() {
   check('getVirtualCameraStatus reports registered', status && status.registered);
   check('DirectShow registration active', status && status.directShow);
   check('FriendlyName is "OpenCam Virtual Camera"', status && status.friendlyName === 'OpenCam Virtual Camera');
+
+  // Verify InprocServer32 points to extracted DLL in runtime storage
+  const inprocKey = 'HKCU:\\SOFTWARE\\Classes\\CLSID\\{A3FCE0F5-3493-419F-958A-ABA1250EC20B}\\InprocServer32';
+  let inprocPath = '';
+  try {
+    inprocPath = execSync(`powershell -Command "(Get-ItemProperty -Path '${inprocKey}' -ErrorAction SilentlyContinue).'(default)'"`, { encoding: 'utf8' }).trim();
+  } catch (_) {}
+  const expectedDll64 = path.join(RUNTIME_VCAM_DIR, 'obs-virtualcam-module64.dll');
+  check('InprocServer32 points to extracted 64-bit DLL in runtime storage', inprocPath.toLowerCase() === expectedDll64.toLowerCase(), `got: "${inprocPath}"`);
 
   // Verify DirectShow Video Input Category registry keys in HKCU/HKCR ({860BB310-5D01-11d0-BD3B-00A0C911CE86})
   const dshowKey = 'HKCU:\\SOFTWARE\\Classes\\CLSID\\{860BB310-5D01-11d0-BD3B-00A0C911CE86}\\Instance\\{A7D3E5B1-8C2F-4D9A-901B-2C3D4E5F6A7B}';
