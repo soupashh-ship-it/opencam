@@ -1,29 +1,34 @@
+# Android & Gradle
 *.iml
-.gradle
+.gradle/
 /local.properties
-/.idea
+/.idea/
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
 local.properties
-app/build
+app/build/
+.kotlin/
 
-# PyInstaller artifacts from pc-client/build_exe.bat
-pc-client/build/
-pc-client/dist/
-pc-client/*.spec
-
-# Python
-__pycache__/
-*.pyc
-
-# Electron build artifacts
+# Node & Electron
+node_modules/
 pc-client-native/dist/
 pc-client-native/dist_v2/
 pc-client-native/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Release signing (never commit the keystore or its credentials)
+# Release Signing & Keystores (never commit signing materials)
 /keystore/
+/signing/
+*.keystore
+*.jks
 keystore.properties
+
+# Logs & Temporary Files
+*.log
+*.tmp
+*.sha256
