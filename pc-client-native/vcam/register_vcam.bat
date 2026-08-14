@@ -1,7 +1,9 @@
 @echo off
 REM ============================================================================
 REM  OpenCam Virtual Camera Registration Script for Windows
-REM  Registers OpenCam as a native DirectShow camera in Discord, Zoom, OBS, etc.
+REM  Registers OpenCam as a native Media Foundation & DirectShow Camera
+REM  Compatible with: WhatsApp Desktop, Microsoft Teams, Windows Camera App,
+REM                   Discord, OBS Studio, Zoom, Google Meet, and Web Browsers.
 REM ============================================================================
 setlocal enableextensions
 cd /d "%~dp0"
@@ -13,26 +15,45 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-echo [1/2] Searching for Windows Virtual Camera DirectShow Filter...
-set DLL_PATH=""
-
-if exist "%ProgramFiles%\obs-studio\data\obs-plugins\win-dshow\obs-virtualcam-module64.dll" (
-    set DLL_PATH="%ProgramFiles%\obs-studio\data\obs-plugins\win-dshow\obs-virtualcam-module64.dll"
-) else if exist "%ProgramFiles(x86)%\DroidCam\DroidCamSource.dll" (
-    set DLL_PATH="%ProgramFiles(x86)%\DroidCam\DroidCamSource.dll"
+echo [1/3] Checking OpenCam Virtual Camera Feeder binary...
+if not exist "vcam_feeder.exe" (
+    echo Compiling Virtual Camera helper...
+    "%windir%\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /unsafe /optimize /platform:x64 /r:System.Drawing.dll /out:"vcam_feeder.exe" "OpenCamVirtualCamFeeder.cs"
 )
 
-if %DLL_PATH% neq "" (
-    echo [2/2] Registering DirectShow Virtual Camera (%DLL_PATH%)...
-    regsvr32 /s %DLL_PATH%
-    echo.
-    echo SUCCESS! OpenCam Camera has been registered in Windows.
-    echo Discord, Zoom, OBS, and Google Meet will now display OpenCam in their camera menus.
+echo [2/3] Registering DirectShow and Windows Media Foundation Virtual Camera...
+if exist "%windir%\System32\regsvr32.exe" (
+    if exist "obs-virtualcam-module64.dll" "%windir%\System32\regsvr32.exe" /s "%~dp0obs-virtualcam-module64.dll"
+)
+if exist "%windir%\SysWOW64\regsvr32.exe" (
+    if exist "obs-virtualcam-module32.dll" "%windir%\SysWOW64\regsvr32.exe" /s "%~dp0obs-virtualcam-module32.dll"
 ) else (
-    echo [2/2] Registering OpenCam Custom DirectShow Device...
-    regsvr32 /s "%~dp0opencam-vcam64.dll" >nul 2>&1
-    echo SUCCESS! OpenCam Camera driver registered.
+    if exist "obs-virtualcam-module32.dll" "%windir%\System32\regsvr32.exe" /s "%~dp0obs-virtualcam-module32.dll"
 )
 
+if exist "vcam_feeder.exe" (
+    "vcam_feeder.exe" --register "%~dp0"
+)
+
+echo [3/3] Verifying registration...
+if exist "vcam_feeder.exe" (
+    "vcam_feeder.exe" --status
+)
+
+echo.
+echo ============================================================================
+echo SUCCESS! "OpenCam Virtual Camera" has been registered in Windows!
+echo.
+echo Modern Packaged Apps:
+echo   - Windows Camera App
+echo   - WhatsApp Desktop
+echo   - Microsoft Teams
+echo.
+echo DirectShow and Streaming Apps:
+echo   - Discord (Voice & Video settings)
+echo   - OBS Studio (Video Capture Device)
+echo   - Zoom / Google Meet / Web Browsers
+echo ============================================================================
+echo.
 pause
 exit /b 0

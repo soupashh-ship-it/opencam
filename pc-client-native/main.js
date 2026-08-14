@@ -4,11 +4,18 @@ const net = require('net');
 const http = require('http');
 const fs = require('fs');
 const { buildVideoRequest, createFrameParser } = require('./stream-parser');
+const {
+  VirtualCamFeeder,
+  registerVirtualCamera,
+  unregisterVirtualCamera,
+  getVirtualCameraStatus,
+} = require('./vcam-feeder');
 
 let mainWindow = null;
 let videoSocket = null;
 let isConnected = false;
 let stopRequested = false;
+const vcamFeeder = new VirtualCamFeeder();
 
 // Connection bookkeeping (see retry policy in scheduleReconnect).
 let connectAttempts = 0;
@@ -70,6 +77,7 @@ function disconnectStream() {
     try { videoSocket.destroy(); } catch (_) {}
     videoSocket = null;
   }
+  try { vcamFeeder.stop(); } catch (_) {}
 }
 
 function connectVideo(ip, port, codec, width, height) {
@@ -78,6 +86,10 @@ function connectVideo(ip, port, codec, width, height) {
   isConnected = true;
   lastConnectError = null;
   const generation = connectionGeneration;
+
+  const w = width || 1920;
+  const h = height || 1080;
+  try { vcamFeeder.start({ width: w, height: h, fps: 30 }); } catch (_) {}
 
   const sock = new net.Socket();
   videoSocket = sock;
@@ -94,10 +106,11 @@ function connectVideo(ip, port, codec, width, height) {
         try { sock.destroy(); } catch (_) {}
       }
     },
-    onFrame: (payload) => {
+    onFrame: (payload, pts) => {
       // A frame means the stream is genuinely live: reset the failure counter.
       framesEverReceived = true;
       connectAttempts = 0;
+      try { vcamFeeder.pushFrame(payload, pts); } catch (_) {}
       if (!stopRequested && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('video-frame', payload);
       }
@@ -341,47 +354,35 @@ ipcMain.handle('toggle-always-on-top', async () => {
 
 ipcMain.handle('register-vcam', async () => {
   try {
-    const { exec } = require('child_process');
-    const psScript = `
-$ErrorActionPreference = 'SilentlyContinue'
-
-# 1. Register available DirectShow VirtualCam DLLs
-$obsDll = "$env:ProgramFiles\\obs-studio\\data\\obs-plugins\\win-dshow\\obs-virtualcam-module64.dll"
-$droidDll = "$env:ProgramFiles(x86)\\DroidCam\\DroidCamSource.dll"
-
-if (Test-Path $obsDll) {
-    Start-Process "regsvr32.exe" -ArgumentList "/s \`"$obsDll\`"" -Wait
-}
-if (Test-Path $droidDll) {
-    Start-Process "regsvr32.exe" -ArgumentList "/s \`"$droidDll\`"" -Wait
-}
-
-# 2. Register OpenCam Camera in DirectShow System Device Enumerator
-$path = 'HKCU:\\SOFTWARE\\Classes\\CLSID\\{86060779-2122-11D0-8250-00A0C91B929D}\\Instance\\{A7D3E5B1-8C2F-4D9A-901B-2C3D4E5F6A7B}'
-New-Item -Path $path -Force | Out-Null
-Set-ItemProperty -Path $path -Name 'FriendlyName' -Value 'OpenCam Camera'
-Set-ItemProperty -Path $path -Name 'CLSID' -Value '{A7D3E5B1-8C2F-4D9A-901B-2C3D4E5F6A7B}'
-
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.MessageBox]::Show('OpenCam Camera has been registered successfully! Restart Discord to select OpenCam Camera in Voice & Video settings.', 'OpenCam Virtual Camera', 0, 64)
-`;
-
-    const tempPs = path.join(app.getPath('temp'), 'register_opencam_vcam.ps1');
-    fs.writeFileSync(tempPs, psScript, 'utf8');
-
-    const cmd = `powershell -Command "Start-Process powershell -ArgumentList '-ExecutionPolicy Bypass -File \\"${tempPs}\\"' -Verb RunAs"`;
-    exec(cmd, (err) => {
-      if (err) console.error('VCam reg error:', err);
-    });
-
-    return { success: true, message: 'Registration Script launched' };
+    return await registerVirtualCamera(true);
   } catch (err) {
     return { success: false, message: err.message };
   }
 });
 
+ipcMain.handle('unregister-vcam', async () => {
+  try {
+    return await unregisterVirtualCamera(true);
+  } catch (err) {
+    return { success: false, message: err.message };
+  }
+});
+
+ipcMain.handle('get-vcam-status', async () => {
+  try {
+    return getVirtualCameraStatus();
+  } catch (err) {
+    return { registered: false, directShow: false, mediaFoundation: false, error: err.message };
+  }
+});
+
 // App Lifecycle
 app.whenReady().then(createWindow);
+
+app.on('will-quit', () => {
+  disconnectStream();
+  try { vcamFeeder.stop(); } catch (_) {}
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

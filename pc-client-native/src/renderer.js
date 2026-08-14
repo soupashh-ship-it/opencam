@@ -521,17 +521,34 @@ if (btnPin) {
   });
 }
 
-// Register Virtual Camera Button (for Discord / OBS / Zoom)
+// Register Virtual Camera Button (for Teams / WhatsApp / Discord / OBS)
 const btnVcam = document.getElementById('btn-vcam');
-if (btnVcam) {
-  btnVcam.addEventListener('click', async () => {
-    showToast('Launching Virtual Camera Installer...');
-    const res = await window.api.registerVcam();
-    if (res.success) {
-      showToast('Virtual Camera Registration Prompt Opened!');
+async function syncVcamStatus() {
+  if (!btnVcam || !window.api.getVcamStatus) return;
+  try {
+    const status = await window.api.getVcamStatus();
+    if (status && status.registered) {
+      btnVcam.textContent = '🎥 Virtual Camera: Active (MF & DirectShow)';
+      btnVcam.classList.add('active');
     } else {
-      showToast(`Error: ${res.message}`);
+      btnVcam.textContent = '🎥 Register Virtual Camera (Teams / WhatsApp / OBS)';
+      btnVcam.classList.remove('active');
     }
+  } catch (_) {}
+}
+
+if (btnVcam) {
+  syncVcamStatus();
+  btnVcam.addEventListener('click', async () => {
+    btnVcam.textContent = 'Registering Virtual Camera...';
+    showToast('Registering OpenCam Virtual Camera for DirectShow and Media Foundation...');
+    const res = await window.api.registerVcam();
+    if (res && res.success) {
+      showToast('OpenCam Virtual Camera registered! Available in Teams, WhatsApp, Camera App, Discord & OBS.');
+    } else {
+      showToast(`Registration note: ${(res && res.message) || 'Completed'}`);
+    }
+    syncVcamStatus();
   });
 }
 

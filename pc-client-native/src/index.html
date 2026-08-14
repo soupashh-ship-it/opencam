@@ -51,22 +51,20 @@
         </div>
       </div>
 
-      <!-- Discord & OBS Integration Guide Card -->
+      <!-- Virtual Camera Integration Guide Card -->
       <div class="card glass-panel integration-card">
         <div class="card-header">
-          <h2>Discord & OBS Setup Guide</h2>
+          <h2>Virtual Camera Setup</h2>
         </div>
         <div class="integration-copy">
-          <p style="margin: 0 0 6px 0; font-weight: 600; color: #60a5fa;">Method 1: OBS Virtual Camera (Recommended)</p>
-          <ol style="margin: 0 0 10px 0; padding-left: 16px;">
-            <li>Open <b>OBS Studio</b> &rarr; add <b>Window Capture</b> (select OpenCam Studio).</li>
-            <li>Click <b>Start Virtual Camera</b> in OBS bottom-right panel.</li>
-            <li>In <b>Discord</b> &rarr; <b>Voice &amp; Video</b>, select <b>OBS Virtual Camera</b>!</li>
-          </ol>
-          <p style="margin: 0 0 6px 0; font-weight: 600; color: #34d399;">Method 2: DroidCam Video</p>
-          <ol style="margin: 0; padding-left: 16px;">
-            <li>Open <b>DroidCam Client</b> &rarr; connect to phone IP on port <b>4747</b>.</li>
-            <li>In <b>Discord</b> &rarr; <b>Voice &amp; Video</b>, select <b>DroidCam Video</b>!</li>
+          <p style="margin: 0 0 6px 0; font-weight: 600; color: #38bdf8;">Native OpenCam Virtual Camera</p>
+          <p style="margin: 0 0 8px 0; font-size: 11px; line-height: 1.4; color: #94a3b8;">
+            Streams directly into <b>Windows Camera App</b>, <b>WhatsApp Desktop</b>, <b>Microsoft Teams</b>, <b>Discord</b>, and <b>OBS Studio</b> as <code>OpenCam Virtual Camera</code>.
+          </p>
+          <ol style="margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.4;">
+            <li>Click <b>Register Virtual Camera</b> below.</li>
+            <li>Connect phone stream.</li>
+            <li>Select <b>OpenCam Virtual Camera</b> in your meeting/video app!</li>
           </ol>
         </div>
       </div>
@@ -155,8 +153,8 @@
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
           Take HD Snapshot
         </button>
-        <button id="btn-vcam" class="btn btn-outline" style="font-size: 12px;">
-          🎥 Register Camera (Discord / OBS)
+        <button id="btn-vcam" class="btn btn-outline" style="font-size: 12px;" title="Register OpenCam as a system Virtual Camera for Teams, WhatsApp, Discord, and OBS">
+          🎥 Register Virtual Camera (Teams / WhatsApp / OBS)
         </button>
       </div>
     </aside>

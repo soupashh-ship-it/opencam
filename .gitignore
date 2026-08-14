@@ -29,6 +29,7 @@ yarn-error.log*
 keystore.properties
 
 # Logs & Temporary Files
+.agents/
 *.log
 *.tmp
 *.sha256

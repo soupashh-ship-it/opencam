@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('api', {
   scanDevices: (port) => ipcRenderer.invoke('scan-devices', port),
   toggleAlwaysOnTop: () => ipcRenderer.invoke('toggle-always-on-top'),
   registerVcam: () => ipcRenderer.invoke('register-vcam'),
+  unregisterVcam: () => ipcRenderer.invoke('unregister-vcam'),
+  getVcamStatus: () => ipcRenderer.invoke('get-vcam-status'),
   onVideoFrame: (callback) => {
     ipcRenderer.removeAllListeners('video-frame');
     ipcRenderer.on('video-frame', (_event, buffer) => callback(buffer));
