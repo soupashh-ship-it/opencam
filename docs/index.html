@@ -488,6 +488,7 @@
             <button class="tab-btn active" data-tab="tab-obs" role="tab" id="tab-btn-obs">🎬 OBS Studio (Recommended)</button>
             <button class="tab-btn" data-tab="tab-studio" role="tab" id="tab-btn-studio">💻 OpenCam Studio (Standalone)</button>
             <button class="tab-btn" data-tab="tab-usb" role="tab" id="tab-btn-usb">🔌 Zero-Lag USB Mode</button>
+            <button class="tab-btn" data-tab="tab-vcam" role="tab" id="tab-btn-vcam">📱 WhatsApp & Virtual Cam</button>
           </div>
 
           <div class="tabs-content">
@@ -551,6 +552,27 @@
                   <div class="step-number">3</div>
                   <h4>Zero Interference Stream</h4>
                   <p>Connect to <code>127.0.0.1:4747</code> in OBS or PC Studio for lightning-fast hardware throughput.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 4: Virtual Cam -->
+            <div class="tab-pane" id="tab-vcam" role="tabpanel">
+              <div class="steps-grid">
+                <div class="step-card">
+                  <div class="step-number">1</div>
+                  <h4>Register Virtual Cam</h4>
+                  <p>Run <code>pc-client-native/vcam/register_vcam.bat</code> as Administrator once (or click Enable Virtual Camera in OpenCam Studio).</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">2</div>
+                  <h4>Connect Phone Feed</h4>
+                  <p>Connect to your phone stream in OpenCam Studio. Live frames are automatically fed to the virtual camera ring buffer.</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">3</div>
+                  <h4>Select in WhatsApp / Teams</h4>
+                  <p>In WhatsApp Desktop, Teams, Discord, or Zoom: Select <code>OpenCam Virtual Camera</code> in your video settings!</p>
                 </div>
               </div>
             </div>

@@ -129,6 +129,18 @@ For rock-solid stability and zero wireless interference:
 
 ---
 
+### Option 4: Using as a Virtual Camera (WhatsApp, Teams, Discord, Zoom)
+
+Use OpenCam as your primary camera in any Windows application:
+
+1. In `pc-client-native`, run **`vcam/register_vcam.bat`** as Administrator once (or click **Enable Virtual Camera** inside OpenCam Studio).
+2. Connect your phone stream in OpenCam Studio.
+3. In **WhatsApp Desktop**, **Microsoft Teams**, **Discord**, **Zoom**, or **Google Meet**:
+   - Go to **Video / Camera Settings** &rarr; select **`OpenCam Virtual Camera`**.
+   - Your live phone stream is piped directly with low-latency NV12 color conversion and sandboxed AppContainer support!
+
+---
+
 ## 🛠️ System Architecture
 
 ```mermaid
