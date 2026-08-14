@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenCam — Free Wireless & USB Phone Webcam for OBS Studio & Windows</title>
+  <meta name="description" content="Turn your Android phone into an ultra-low-latency 4K 60FPS wireless or USB webcam for OBS Studio and Windows. 100% free, open-source, and clean-room DroidCam OBS protocol compatible.">
+  <meta name="keywords" content="OpenCam, DroidCam OBS alternative, Android webcam, OBS Studio, 4K webcam, 60fps webcam, wireless webcam, USB webcam, open source webcam">
+  
+  <!-- Open Graph / Social Media -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="OpenCam — Free Studio Webcam for OBS & Windows">
+  <meta property="og:description" content="Studio-grade 4K 60FPS wireless and USB phone webcam for OBS Studio. Hardware accelerated, zero latency, no ads, 100% free.">
+  <meta property="og:url" content="https://soupashh-ship-it.github.io/opencam/">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Announcement Bar -->
+  <aside class="announcement-bar" id="announcement-bar">
+    <div class="container announcement-inner">
+      <span class="badge-tag">v1.6.2 Released</span>
+      <span class="announcement-text">OpenCam v1.6.2 is live with two-way phone remote control & native PC Studio client!</span>
+      <a href="https://github.com/soupashh-ship-it/opencam/releases/latest" class="announcement-link" target="_blank" rel="noopener">Get APK &rarr;</a>
+    </div>
+  </aside>
+
+  <!-- Navigation -->
+  <header class="site-header" id="site-header">
+    <div class="container nav-wrapper">
+      <a href="#" class="brand-logo" id="nav-brand-logo">
+        <svg class="brand-icon" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+        <span class="brand-name">OpenCam</span>
+      </a>
+
+      <nav class="nav-links" id="main-nav">
+        <a href="#features" class="nav-link">Features</a>
+        <a href="#demo" class="nav-link">Interactive Simulator</a>
+        <a href="#setup" class="nav-link">Setup Guide</a>
+        <a href="#comparison" class="nav-link">Compare</a>
+        <a href="#protocol" class="nav-link">Wire Protocol</a>
+        <a href="#downloads" class="nav-link">Downloads</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a href="https://github.com/soupashh-ship-it/opencam" target="_blank" rel="noopener" class="btn btn-secondary nav-btn" id="nav-github-btn">
+          <svg class="btn-icon" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          <span>Star on GitHub</span>
+        </a>
+        <a href="#downloads" class="btn btn-primary nav-btn" id="nav-download-btn">Download APK</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Hero Section -->
+  <main>
+    <section class="hero-section" id="hero">
+      <div class="container hero-container">
+        <div class="hero-content">
+          <div class="tag-row">
+            <span class="feature-badge">⚡ 100% Free & Open Source</span>
+            <span class="feature-badge">🎬 OBS Plugin Native</span>
+          </div>
+
+          <h1 class="hero-title">Studio-Grade Phone Webcam for OBS & Windows</h1>
+          <p class="hero-subtitle">
+            Transform your Android smartphone into an ultra-low-latency <strong>4K 60FPS</strong> wireless or USB webcam. Zero subscriptions, zero watermarks, and built-in two-way desktop remote control.
+          </p>
+
+          <div class="hero-cta-group">
+            <a href="https://github.com/soupashh-ship-it/opencam/releases/latest" class="btn btn-primary btn-lg" id="hero-download-apk-btn" target="_blank" rel="noopener">
+              <svg class="btn-icon" viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+              </svg>
+              <span>Download OpenCam APK (v1.6.2)</span>
+            </a>
+            <a href="#demo" class="btn btn-outline btn-lg" id="hero-try-demo-btn">
+              <svg class="btn-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="5 3 19 12 5 21 5 3"/>
+              </svg>
+              <span>Try Live Simulator</span>
+            </a>
+          </div>
+
+          <!-- Quick Specs List -->
+          <div class="hero-stats-grid">
+            <div class="stat-card">
+              <span class="stat-value">4K UHD</span>
+              <span class="stat-label">Max Resolution</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value">60 FPS</span>
+              <span class="stat-label">Smooth Frame Rate</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value">&lt; 15 ms</span>
+              <span class="stat-label">Ultra-Low Latency</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value">$0.00</span>
+              <span class="stat-label">No Paywalls / No Ads</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Interactive Live Simulator Section -->
+    <section class="demo-section" id="demo">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Interactive Experience</span>
+          <h2 class="section-title">Experience Two-Way Live Control</h2>
+          <p class="section-subtitle">
+            Test how OpenCam coordinates phone hardware with the PC client in real time. Click controls on either the simulated phone or the PC viewer!
+          </p>
+        </div>
+
+        <div class="simulator-wrapper" id="live-simulator">
+          <!-- Left: Phone Simulator -->
+          <div class="sim-device phone-device">
+            <div class="device-header">
+              <div class="phone-speaker"></div>
+              <div class="phone-camera-dot"></div>
+            </div>
+
+            <div class="phone-screen" id="phone-screen">
+              <!-- Viewfinder Overlay -->
+              <div class="viewfinder" id="sim-viewfinder">
+                <div class="viewfinder-lens-view" id="sim-camera-feed">
+                  <div class="viewfinder-subject" id="sim-subject">
+                    <div class="subject-avatar">🎙️</div>
+                    <div class="subject-label" id="sim-subject-label">Subject (1.0x Main Lens)</div>
+                  </div>
+                  <div class="viewfinder-grid"></div>
+                  <div class="viewfinder-focus-box" id="sim-focus-box"></div>
+                </div>
+
+                <!-- Top Telemetry Bar -->
+                <div class="phone-top-bar">
+                  <span class="phone-res-badge" id="phone-res-badge">1080p · 30 FPS</span>
+                  <div class="phone-status-icons">
+                    <span class="status-pill" id="phone-tally-pill">LIVE ON-AIR</span>
+                    <span class="phone-battery" id="phone-battery-val">🔋 88%</span>
+                  </div>
+                </div>
+
+                <!-- Live Stream Details Overlay -->
+                <div class="phone-stream-info">
+                  <span id="phone-stream-ip">192.168.1.120:4747</span>
+                  <span id="phone-stream-codec">MJPEG (Direct Frame)</span>
+                </div>
+              </div>
+
+              <!-- Phone In-App Controls -->
+              <div class="phone-controls">
+                <div class="lens-switcher" id="phone-lens-switcher">
+                  <button class="lens-btn" data-lens="ultra-wide" id="btn-lens-ultra">0.6x</button>
+                  <button class="lens-btn active" data-lens="main" id="btn-lens-main">1x</button>
+                  <button class="lens-btn" data-lens="telephoto" id="btn-lens-tele">3x</button>
+                  <button class="lens-btn" data-lens="front" id="btn-lens-front">Selfie</button>
+                </div>
+
+                <div class="phone-action-row">
+                  <button class="phone-action-btn" id="sim-phone-torch-btn" title="Toggle Flashlight Torch">
+                    <span class="btn-emoji">🔦</span>
+                    <span class="btn-text">Torch: <b id="sim-phone-torch-state">OFF</b></span>
+                  </button>
+                  <button class="phone-action-btn" id="sim-phone-mirror-btn" title="Toggle Stream Mirroring">
+                    <span class="btn-emoji">🪞</span>
+                    <span class="btn-text">Mirror: <b id="sim-phone-mirror-state">OFF</b></span>
+                  </button>
+                  <button class="phone-action-btn" id="sim-phone-stream-toggle" title="Toggle Stream Active">
+                    <span class="btn-emoji">🟢</span>
+                    <span class="btn-text">Streaming</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="device-label">📱 OpenCam Android App</div>
+          </div>
+
+          <!-- Middle Connection Sync Pipe -->
+          <div class="sim-sync-pipe">
+            <div class="sync-line"></div>
+            <div class="sync-indicator">
+              <span class="sync-packet">TCP 4747</span>
+              <span class="sync-label" id="sim-latency-readout">⚡ 12 ms</span>
+            </div>
+            <div class="sync-line"></div>
+          </div>
+
+          <!-- Right: PC Client Simulator -->
+          <div class="sim-device pc-device">
+            <div class="pc-window-header">
+              <div class="window-controls">
+                <span class="win-dot close"></span>
+                <span class="win-dot min"></span>
+                <span class="win-dot max"></span>
+              </div>
+              <div class="window-title">OpenCam Studio — 192.168.1.120:4747</div>
+              <div class="pc-header-status">
+                <span class="pc-conn-indicator" id="pc-conn-status">● Connected</span>
+              </div>
+            </div>
+
+            <div class="pc-body">
+              <!-- PC Preview Area -->
+              <div class="pc-preview-screen" id="pc-preview-container">
+                <div class="pc-feed-display" id="pc-feed-display">
+                  <div class="pc-feed-subject" id="pc-feed-subject">
+                    <div class="subject-avatar">🎙️</div>
+                    <div class="subject-tag">OBS Stream Feed</div>
+                  </div>
+                  <div class="pc-overlay-stats">
+                    <span id="pc-stats-fps">30.0 FPS</span>
+                    <span id="pc-stats-res">1920×1080</span>
+                    <span id="pc-stats-bitrate">8.0 Mbps</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- PC Remote Control Panel -->
+              <div class="pc-controls-panel">
+                <div class="pc-control-group">
+                  <label class="control-label">Resolution & FPS</label>
+                  <div class="control-row">
+                    <select class="sim-select" id="pc-res-select">
+                      <option value="3840x2160">4K UHD (3840×2160)</option>
+                      <option value="1920x1080" selected>Full HD (1920×1080)</option>
+                      <option value="1280x720">HD (1280×720)</option>
+                      <option value="640x480">SD (640×480)</option>
+                    </select>
+                    <select class="sim-select" id="pc-fps-select">
+                      <option value="60">60 FPS</option>
+                      <option value="30" selected>30 FPS</option>
+                      <option value="24">24 FPS</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="pc-control-group">
+                  <label class="control-label">Hardware Codec</label>
+                  <div class="control-row">
+                    <select class="sim-select" id="pc-codec-select">
+                      <option value="jpg" selected>MJPEG (Fast Zero-Lag)</option>
+                      <option value="avc">H.264 / AVC (Hardware)</option>
+                      <option value="hevc">H.265 / HEVC (High Efficiency)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="pc-control-group">
+                  <label class="control-label">Remote Phone Overrides</label>
+                  <div class="pc-btn-grid">
+                    <button class="pc-btn" id="pc-toggle-torch">🔦 Remote Torch</button>
+                    <button class="pc-btn" id="pc-toggle-mirror">🪞 Flip Mirror</button>
+                    <button class="pc-btn" id="pc-rotate-feed">🔄 Rotate (0°)</button>
+                    <button class="pc-btn" id="pc-take-screenshot">📸 Snapshot</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="device-label">💻 OpenCam Studio (Windows PC Client)</div>
+          </div>
+        </div>
+
+        <div class="sim-tip-banner">
+          <span>💡 <b>Live Two-Way Sync</b>: Changing resolution or flipping the torch from the PC client sends a <code>PUT /v1/settings</code> payload to the phone instantly without restarting the stream!</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Key Features Grid -->
+    <section class="features-section" id="features">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Engineered for Streamers</span>
+          <h2 class="section-title">Everything You Need for Broadcasts</h2>
+          <p class="section-subtitle">
+            Built from scratch to deliver uncompromising video quality, zero latency, and seamless compatibility.
+          </p>
+        </div>
+
+        <div class="features-grid">
+          <!-- Feature 1 -->
+          <div class="feature-card">
+            <div class="feature-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                <polygon points="23 7 16 12 23 17 23 7"></polygon>
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+              </svg>
+            </div>
+            <h3 class="feature-card-title">4K UHD & 60 FPS Video</h3>
+            <p class="feature-card-desc">
+              Unlock the full optical sensor capabilities of your phone. Stream uncompressed-quality 4K or ultra-smooth 60 FPS directly to OBS with hardware MediaCodec acceleration.
+            </p>
+          </div>
+
+          <!-- Feature 2 -->
+          <div class="feature-card">
+            <div class="feature-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="23"></line>
+                <line x1="8" y1="23" x2="16" y2="23"></line>
+              </svg>
+            </div>
+            <h3 class="feature-card-title">Synchronized AAC Audio</h3>
+            <p class="feature-card-desc">
+              Studio-grade 48 kHz AAC-LC audio transmission with cumulative timestamping algorithms that eliminate drift between your video feed and vocal mic.
+            </p>
+          </div>
+
+          <!-- Feature 3 -->
+          <div class="feature-card">
+            <div class="feature-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                <line x1="6" y1="18" x2="6.01" y2="18"></line>
+              </svg>
+            </div>
+            <h3 class="feature-card-title">Zero-Lag USB & Wi-Fi</h3>
+            <p class="feature-card-desc">
+              Choose between ultra-convenient mDNS Wi-Fi auto-discovery or zero-interference wired USB streaming via ADB port forwarding for critical esports/production streams.
+            </p>
+          </div>
+
+          <!-- Feature 4 -->
+          <div class="feature-card">
+            <div class="feature-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+            </div>
+            <h3 class="feature-card-title">Two-Way Remote Control</h3>
+            <p class="feature-card-desc">
+              Never touch your mounted phone mid-stream. Toggle flashlight torch, smooth optical zoom, lens switches, exposure, and bitrates right from the PC desktop.
+            </p>
+          </div>
+
+          <!-- Feature 5 -->
+          <div class="feature-card">
+            <div class="feature-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+            </div>
+            <h3 class="feature-card-title">Screen-Off Streaming</h3>
+            <p class="feature-card-desc">
+              Battery-saving Foreground Service maintains stream connectivity indefinitely while your screen is completely off, preventing overheating during multi-hour broadcasts.
+            </p>
+          </div>
+
+          <!-- Feature 6 -->
+          <div class="feature-card">
+            <div class="feature-icon-box">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"></circle>
+                <circle cx="12" cy="12" r="6"></circle>
+                <circle cx="12" cy="12" r="2"></circle>
+              </svg>
+            </div>
+            <h3 class="feature-card-title">OBS Tally Light & Telemetry</h3>
+            <p class="feature-card-desc">
+              The phone screen displays live OBS Tally indicators (Red when Live on Program, Amber on Preview) and streams battery health status to the PC.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Comparison Section -->
+    <section class="comparison-section" id="comparison">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Unrestricted Freedom</span>
+          <h2 class="section-title">How OpenCam Compares</h2>
+          <p class="section-subtitle">
+            See why OpenCam is the open-source choice for streamers and creators.
+          </p>
+        </div>
+
+        <div class="table-container">
+          <table class="comparison-table">
+            <thead>
+              <tr>
+                <th>Feature</th>
+                <th class="highlight-col">OpenCam</th>
+                <th>DroidCam (Free)</th>
+                <th>Camo (Free)</th>
+                <th>Iriun (Free)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Price</strong></td>
+                <td class="highlight-col"><strong>100% Free / MIT</strong></td>
+                <td>Freemium ($5.99)</td>
+                <td>Freemium ($49.99/yr)</td>
+                <td>Freemium ($7.99)</td>
+              </tr>
+              <tr>
+                <td><strong>Resolution</strong></td>
+                <td class="highlight-col"><strong>Up to 4K UHD</strong></td>
+                <td>480p / 720p Cap</td>
+                <td>720p Cap</td>
+                <td>Up to 4K</td>
+              </tr>
+              <tr>
+                <td><strong>Frame Rate</strong></td>
+                <td class="highlight-col"><strong>Up to 60 FPS</strong></td>
+                <td>30 FPS Cap</td>
+                <td>30 FPS Cap</td>
+                <td>Up to 60 FPS</td>
+              </tr>
+              <tr>
+                <td><strong>Watermarks / Ads</strong></td>
+                <td class="highlight-col"><strong>None (Zero)</strong></td>
+                <td>Banner Ads</td>
+                <td>Watermark</td>
+                <td>Watermark / Nag</td>
+              </tr>
+              <tr>
+                <td><strong>OBS Native Plugin</strong></td>
+                <td class="highlight-col"><strong>✅ Built-in Native</strong></td>
+                <td>✅ Native</td>
+                <td>❌ (Virtual Cam)</td>
+                <td>❌ (Virtual Cam)</td>
+              </tr>
+              <tr>
+                <td><strong>Remote Desktop Controls</strong></td>
+                <td class="highlight-col"><strong>✅ Included (Torch/Zoom/Lens)</strong></td>
+                <td>❌ Pro Only</td>
+                <td>❌ Pro Only</td>
+                <td>❌ None</td>
+              </tr>
+              <tr>
+                <td><strong>Screen-Off Streaming</strong></td>
+                <td class="highlight-col"><strong>✅ Foreground Service</strong></td>
+                <td>❌ Pro Only</td>
+                <td>❌ No</td>
+                <td>❌ No</td>
+              </tr>
+              <tr>
+                <td><strong>Open Source Code</strong></td>
+                <td class="highlight-col"><strong>✅ 100% Open (MIT)</strong></td>
+                <td>❌ Closed Source</td>
+                <td>❌ Closed Source</td>
+                <td>❌ Closed Source</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Setup Guide Section -->
+    <section class="setup-section" id="setup">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Simple 3-Minute Setup</span>
+          <h2 class="section-title">Quick Setup Guides</h2>
+          <p class="section-subtitle">
+            Choose your preferred workflow to get streaming in seconds.
+          </p>
+        </div>
+
+        <div class="tabs-container">
+          <div class="tabs-header" role="tablist">
+            <button class="tab-btn active" data-tab="tab-obs" role="tab" id="tab-btn-obs">🎬 OBS Studio (Recommended)</button>
+            <button class="tab-btn" data-tab="tab-studio" role="tab" id="tab-btn-studio">💻 OpenCam Studio (Standalone)</button>
+            <button class="tab-btn" data-tab="tab-usb" role="tab" id="tab-btn-usb">🔌 Zero-Lag USB Mode</button>
+          </div>
+
+          <div class="tabs-content">
+            <!-- Tab 1: OBS Studio -->
+            <div class="tab-pane active" id="tab-obs" role="tabpanel">
+              <div class="steps-grid">
+                <div class="step-card">
+                  <div class="step-number">1</div>
+                  <h4>Install Phone App</h4>
+                  <p>Download and install <code>OpenCam.apk</code> on your Android phone. Launch the app and grant Camera/Mic permissions.</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">2</div>
+                  <h4>Install OBS Plugin</h4>
+                  <p>Install the standard open-source <a href="https://droidcam.app/obs" target="_blank" rel="noopener">DroidCam OBS Plugin</a> on your streaming PC.</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">3</div>
+                  <h4>Add Source & Stream</h4>
+                  <p>In OBS: Click <b>Sources (+)</b> &rarr; <b>DroidCam OBS</b> &rarr; Click <b>Refresh</b> &rarr; select <code>OpenCam-...</code> &rarr; Click <b>Activate</b>!</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 2: OpenCam Studio -->
+            <div class="tab-pane" id="tab-studio" role="tabpanel">
+              <div class="steps-grid">
+                <div class="step-card">
+                  <div class="step-number">1</div>
+                  <h4>Launch PC Studio</h4>
+                  <p>Run the portable OpenCam Studio client on Windows (or run <code>npm start</code> from <code>pc-client-native</code>).</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">2</div>
+                  <h4>Scan Local Network</h4>
+                  <p>Click <b>Scan Network</b> to auto-detect your phone's IP address and port 4747 on the local Wi-Fi subnet.</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">3</div>
+                  <h4>Live Control & Preview</h4>
+                  <p>Enjoy ultra-low-latency desktop monitoring, instant snapshots, rotation flips, and bi-directional phone controls.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab 3: USB Mode -->
+            <div class="tab-pane" id="tab-usb" role="tabpanel">
+              <div class="steps-grid">
+                <div class="step-card">
+                  <div class="step-number">1</div>
+                  <h4>Enable USB Debugging</h4>
+                  <p>Go to Android <b>Settings &rarr; Developer Options</b> and toggle on <b>USB Debugging</b>.</p>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">2</div>
+                  <h4>Connect USB Cable</h4>
+                  <p>Plug your phone into your PC. The OBS plugin detects ADB devices automatically, or forward manually with one command:</p>
+                  <pre class="code-snippet"><code>adb forward tcp:4747 tcp:4747</code></pre>
+                </div>
+                <div class="step-card">
+                  <div class="step-number">3</div>
+                  <h4>Zero Interference Stream</h4>
+                  <p>Connect to <code>127.0.0.1:4747</code> in OBS or PC Studio for lightning-fast hardware throughput.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Wire Protocol & API Explorer -->
+    <section class="protocol-section" id="protocol">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Developer & Protocol Specs</span>
+          <h2 class="section-title">Clean-Room Wire Protocol</h2>
+          <p class="section-subtitle">
+            OpenCam implements the high-performance DroidCam wire protocol over a single TCP port (4747 default).
+          </p>
+        </div>
+
+        <div class="protocol-grid">
+          <!-- Protocol Endpoints Explorer -->
+          <div class="protocol-box">
+            <h3 class="protocol-box-title">REST Telemetry & Control API</h3>
+            <div class="endpoint-list">
+              <div class="endpoint-item">
+                <span class="method get">GET</span>
+                <span class="path">/v1/status</span>
+                <span class="desc">JSON telemetry snapshot (resolution, FPS, battery, zoom, lens, mirror, torch)</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method put">PUT</span>
+                <span class="path">/v1/settings?k=v</span>
+                <span class="desc">Remote camera mutations (torch=1, zoom=2.0, lens=front, codec=jpg)</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method get">GET</span>
+                <span class="path">/v5/video/{codec}/{WxH}/...</span>
+                <span class="desc">Binary framed video transport (H.264, HEVC, MJPEG)</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method get">GET</span>
+                <span class="path">/v2/audio</span>
+                <span class="desc">48 kHz AAC-LC synchronized audio transport</span>
+              </div>
+              <div class="endpoint-item">
+                <span class="method put">PUT</span>
+                <span class="path">/v1/tally/{program|preview|idle}/</span>
+                <span class="desc">OBS studio tally light feedback</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Binary Frame Packet Format -->
+          <div class="protocol-box">
+            <h3 class="protocol-box-title">12-Byte Binary Frame Structure</h3>
+            <div class="binary-diagram">
+              <div class="byte-block">
+                <span class="byte-range">Bytes 0 – 7 (8 Bytes)</span>
+                <span class="byte-title">Presentation Timestamp (PTS)</span>
+                <span class="byte-meta">Big-Endian (Microseconds µs)</span>
+              </div>
+              <div class="byte-block">
+                <span class="byte-range">Bytes 8 – 11 (4 Bytes)</span>
+                <span class="byte-title">Payload Length</span>
+                <span class="byte-meta">Big-Endian Unsigned Integer</span>
+              </div>
+              <div class="byte-block payload">
+                <span class="byte-range">Bytes 12 – (12 + Length)</span>
+                <span class="byte-title">Media Payload</span>
+                <span class="byte-meta">Raw H.264 / HEVC / MJPEG / AAC Buffer</span>
+              </div>
+            </div>
+            <p class="protocol-note">
+              <code>PTS == 0xFFFFFFFFFFFFFFFF</code> indicates codec SPS/PPS/VPS parameters.<br>
+              <code>Length == 0xFFFFFFFF</code> represents the stream termination sentinel.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Downloads Section -->
+    <section class="downloads-section" id="downloads">
+      <div class="container">
+        <div class="section-header">
+          <span class="section-tag">Get Started Today</span>
+          <h2 class="section-title">Download OpenCam</h2>
+          <p class="section-subtitle">
+            Free, libre, and ready to power your next stream.
+          </p>
+        </div>
+
+        <div class="downloads-grid">
+          <!-- Download 1: Android APK -->
+          <div class="download-card highlight">
+            <div class="card-badge">Latest v1.6.2</div>
+            <div class="download-icon">📱</div>
+            <h3 class="download-card-title">OpenCam Android App</h3>
+            <p class="download-card-desc">Signed release APK for Android 8.0+ (API 26 to 36). Includes all 4K, 60 FPS, multi-lens, and background features.</p>
+            <div class="download-meta">
+              <span>Size: ~8 MB</span> • <span>Platform: Android</span>
+            </div>
+            <a href="https://github.com/soupashh-ship-it/opencam/releases/latest" class="btn btn-primary btn-block" target="_blank" rel="noopener" id="dl-apk-btn">
+              Download OpenCam APK
+            </a>
+          </div>
+
+          <!-- Download 2: PC Studio Client -->
+          <div class="download-card">
+            <div class="download-icon">💻</div>
+            <h3 class="download-card-title">OpenCam Studio PC</h3>
+            <p class="download-card-desc">Native lightweight Windows client with real-time preview, snapshot capture, and bi-directional remote control.</p>
+            <div class="download-meta">
+              <span>Windows 10 / 11 x64</span> • <span>Portable</span>
+            </div>
+            <a href="https://github.com/soupashh-ship-it/opencam/tree/main/pc-client-native" class="btn btn-secondary btn-block" target="_blank" rel="noopener" id="dl-pc-btn">
+              View PC Client Source
+            </a>
+          </div>
+
+          <!-- Download 3: OBS Plugin -->
+          <div class="download-card">
+            <div class="download-icon">🎬</div>
+            <h3 class="download-card-title">DroidCam OBS Plugin</h3>
+            <p class="download-card-desc">Official OBS Studio integration helper. Works natively on Windows, macOS, and Linux.</p>
+            <div class="download-meta">
+              <span>OBS Studio 28+</span> • <span>Free Plugin</span>
+            </div>
+            <a href="https://droidcam.app/obs" class="btn btn-outline btn-block" target="_blank" rel="noopener" id="dl-obs-plugin-btn">
+              Get OBS Plugin
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container footer-content">
+      <div class="footer-brand">
+        <div class="brand-logo">
+          <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+          <span class="brand-name">OpenCam</span>
+        </div>
+        <p class="footer-text">
+          Free, open-source wireless & USB phone webcam system for OBS Studio & Windows.
+        </p>
+      </div>
+
+      <div class="footer-links">
+        <a href="https://github.com/soupashh-ship-it/opencam" target="_blank" rel="noopener">GitHub Repository</a>
+        <a href="https://github.com/soupashh-ship-it/opencam/releases" target="_blank" rel="noopener">Releases & Changelog</a>
+        <a href="https://github.com/soupashh-ship-it/opencam/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        <a href="https://github.com/soupashh-ship-it/opencam/issues" target="_blank" rel="noopener">Issue Tracker</a>
+      </div>
+    </div>
+    <div class="container footer-bottom">
+      <p>© 2026 OpenCam by <a href="https://github.com/soupashh-ship-it" target="_blank" rel="noopener">soupashh-ship-it</a>. MIT Licensed. DroidCam is a trademark of DEV47APPS.</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -7,7 +7,7 @@ on:
 
 jobs:
   android:
-    name: Android APK
+    name: Android Build & Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -22,35 +22,38 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build release APK
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
 
-      - name: Upload APK artifact
+      - name: Build and test Android Debug APK
+        run: ./gradlew check assembleDebug --no-daemon --stacktrace
+
+      - name: Upload Debug APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: opencam-apk
-          path: app/build/outputs/apk/release/*.apk
+          name: opencam-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-  windows-client:
-    name: Windows client self-test
-    runs-on: windows-latest
+  pc-studio:
+    name: OpenCam Studio Wire Tests
+    runs-on: ubuntu-latest
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: pc-client-native
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: pc-client-native/package-lock.json
 
       - name: Install dependencies
-        run: python -m pip install pillow av numpy
+        run: npm ci
 
-      - name: Compile + self-test against the mock phone
-        working-directory: windows-client
-        run: |
-          python -m py_compile opencam_client.py mock_server.py
-          python opencam_client.py --selftest
+      - name: Run wire-protocol regression suite
+        run: npm test

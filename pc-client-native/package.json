@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node test_stream_parser.js",
     "build": "electron-builder --win portable"
   },
   "keywords": [
