@@ -26,8 +26,8 @@ android {
         applicationId = "com.opencam"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.6.2"
+        versionCode = 12
+        versionName = "1.6.3"
     }
 
     signingConfigs {

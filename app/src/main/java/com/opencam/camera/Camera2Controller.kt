@@ -1,5 +1,6 @@
 package com.opencam.camera
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Rect
@@ -143,6 +144,7 @@ class Camera2Controller(context: Context) {
         }
     }
 
+    @SuppressLint("MissingPermission")
     fun open(cameraId: String, onResult: (Boolean) -> Unit) {
         val generation = openGeneration.incrementAndGet()
         // CameraDevice.close() is asynchronous. Wait briefly before opening a

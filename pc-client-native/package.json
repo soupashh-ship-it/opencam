@@ -1,6 +1,6 @@
 {
   "name": "opencam-pc-studio",
-  "version": "1.6.2",
+  "version": "1.6.3",
   "description": "Ultra high-performance native Windows PC Client for OpenCam Android Camera",
   "main": "main.js",
   "scripts": {

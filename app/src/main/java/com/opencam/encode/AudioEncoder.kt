@@ -1,5 +1,6 @@
 package com.opencam.encode
 
+import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
@@ -22,6 +23,7 @@ class AudioEncoder(
     private var configSent = false
     private var totalSamplesRead = 0L
 
+    @SuppressLint("MissingPermission")
     @Synchronized
     fun start(): Boolean {
         if (running.get() || audioRecord != null || mediaCodec != null) return false
