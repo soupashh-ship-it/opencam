@@ -541,12 +541,12 @@ if (btnVcam) {
   syncVcamStatus();
   btnVcam.addEventListener('click', async () => {
     btnVcam.textContent = 'Registering Virtual Camera...';
-    showToast('Registering OpenCam Virtual Camera for DirectShow and Media Foundation...');
+    showToast('Registering OpenCam Virtual Camera for DirectShow and Media Foundation...', 3000);
     const res = await window.api.registerVcam();
     if (res && res.success) {
-      showToast('OpenCam Virtual Camera registered! Available in Teams, WhatsApp, Camera App, Discord & OBS.');
+      showToast('OpenCam Virtual Camera registered! Available in Teams, WhatsApp, Camera App, Discord & OBS.', 5000);
     } else {
-      showToast(`Registration note: ${(res && res.message) || 'Completed'}`);
+      showToast(`Registration note: ${(res && res.message) || 'Completed'}`, 6500);
     }
     syncVcamStatus();
   });

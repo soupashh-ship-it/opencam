@@ -98,10 +98,14 @@ function ensureFeederBinary() {
   }
 
   // Recompile in RUNTIME_VCAM_DIR if binary is missing or source is newer
+  const bundledSource = path.join(BUNDLED_VCAM_DIR, 'OpenCamVirtualCamFeeder.cs');
   let needsCompile = !fs.existsSync(FEEDER_EXE);
   if (!needsCompile) {
     try {
-      const srcMtime = fs.statSync(FEEDER_SOURCE).mtimeMs;
+      const srcMtime = Math.max(
+        fs.existsSync(FEEDER_SOURCE) ? fs.statSync(FEEDER_SOURCE).mtimeMs : 0,
+        fs.existsSync(bundledSource) ? fs.statSync(bundledSource).mtimeMs : 0
+      );
       const exeMtime = fs.statSync(FEEDER_EXE).mtimeMs;
       if (srcMtime > exeMtime) {
         needsCompile = true;
@@ -116,6 +120,12 @@ function ensureFeederBinary() {
   try {
     const cmd = `"${csc}" /nologo /unsafe /optimize /platform:x64 /r:System.Drawing.dll /out:"${FEEDER_EXE}" "${FEEDER_SOURCE}"`;
     execSync(cmd, { cwd: RUNTIME_VCAM_DIR, stdio: 'ignore', timeout: 15000 });
+    const bundledExe = path.join(BUNDLED_VCAM_DIR, 'vcam_feeder.exe');
+    try {
+      if (fs.existsSync(FEEDER_EXE)) {
+        fs.copyFileSync(FEEDER_EXE, bundledExe);
+      }
+    } catch (_) {}
     return fs.existsSync(FEEDER_EXE);
   } catch (err) {
     console.error('Failed to compile virtual camera feeder binary:', err);
@@ -194,7 +204,10 @@ class VirtualCamFeeder {
 
   pushFrame(jpegBuffer, ptsUs = 0) {
     if (!this.process || !this.process.stdin || this.process.killed || this.process.stdin.destroyed) {
-      return false;
+      // Auto-restart feeder process if it was unexpectedly terminated
+      if (!this.start({ width: this.currentWidth, height: this.currentHeight, fps: this.currentFps })) {
+        return false;
+      }
     }
 
     if (!Buffer.isBuffer(jpegBuffer) || jpegBuffer.length === 0) {

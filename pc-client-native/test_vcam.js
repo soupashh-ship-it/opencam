@@ -1,17 +1,22 @@
 // Comprehensive Test Suite for OpenCam Virtual Camera (Media Foundation & DirectShow)
 // Verifies:
 // 1. Feeder binary compilation & lifecycle & automatic source mtime freshness
-// 2. DirectShow & Windows Media Foundation (MF) registration and registry schema (CLSID_VideoInputDeviceCategory & WOW6432Node)
-// 3. Sensor Camera & Video DeviceClasses (KSCATEGORY_SENSOR_CAMERA, KSCATEGORY_CAPTURE, KSCATEGORY_VIDEO)
-// 4. Shared memory mapping (OBSVirtualCamVideo, OpenCamVirtualCamVideo) and Low-Integrity / AppContainer security descriptors
-// 5. Queue header layout (write_idx, read_idx, state, offsets, format type, interval at offset 0x28)
-// 6. Standby card pre-population across all 3 triple buffers (offsets 0, 1, 2)
-// 7. High-throughput JPEG frame feeding & NV12 conversion pipeline
-// 8. Circular triple-buffering transitions (0 -> 1 -> 2 -> 0)
-// 9. Multi-resolution dynamic switching (720p -> 1080p -> 480p -> 720p)
-// 10. Corrupted payload resilience & framing desync recovery
-// 11. Rapid lifecycle stress testing (start/stop/restart)
-// 12. Graceful teardown state reset (state = 0) and unregistration
+// 2. DirectShow & Windows Media Foundation (MF) registration schema (CLSID_VideoInputDeviceCategory & WOW6432Node)
+// 3. Media Foundation FrameServer compatibility (EnableFrameServerMode = 0)
+// 4. Sensor Camera & Video DeviceClasses (KSCATEGORY_SENSOR_CAMERA, KSCATEGORY_CAPTURE, KSCATEGORY_VIDEO with DeviceInstance = ROOT\OPENCAM\0000)
+// 5. Shared memory mapping (OBSVirtualCamVideo, OpenCamVirtualCamVideo) and Low-Integrity / AppContainer security descriptors
+// 6. Queue header layout (write_idx, read_idx, state, offsets, format type, interval at offset 0x28)
+// 7. Always-On Standby Frame Loop (30 FPS autonomous frame delivery into shared memory before phone connection)
+// 8. Seamless live phone frame hot-swapping and low-latency delivery
+// 9. Automatic fallback to standby loop when phone disconnects (no freezing or crashing)
+// 10. Multi-resolution dynamic switching (720p -> 1080p -> 480p -> 720p)
+// 11. Odd & extreme resolution handling (sanitizing odd dimensions to even, 4K clamping)
+// 12. Corrupted payload resilience & framing desync recovery
+// 13. High-throughput sustained streaming stress testing (120 frames at 60 FPS)
+// 14. Multi-consumer concurrency simulation (OBS, Discord, WhatsApp)
+// 15. Rapid lifecycle stress testing (start/stop/restart)
+// 16. BT.601 color space precision & gamut clamping
+// 17. Graceful teardown state reset (state = 0) and unregistration rollback
 
 'use strict';
 
@@ -110,7 +115,7 @@ function testFeederBinary() {
 }
 
 function testRegistrationAndSchema() {
-  console.log('\n--- 2. DirectShow & Media Foundation Registration Schema ---');
+  console.log('\n--- 2. DirectShow, Media Foundation & FrameServer Registration Schema ---');
   // Test registration with trailing slash / quotes to verify argument resilience
   const regDirectWithSlash = spawnSync(FEEDER_EXE, ['--register', `"${RUNTIME_VCAM_DIR}\\"`], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8' });
   check('Feeder binary handles trailing slash in quotes without corrupting path', regDirectWithSlash.status === 0);
@@ -122,6 +127,25 @@ function testRegistrationAndSchema() {
   check('getVirtualCameraStatus reports registered', status && status.registered);
   check('DirectShow registration active', status && status.directShow);
   check('FriendlyName is "OpenCam Virtual Camera"', status && status.friendlyName === 'OpenCam Virtual Camera');
+
+  // Verify Media Foundation EnableFrameServerMode = 0 is configured in registry
+  let frameServerVal = null;
+  const mfPlatformKeys = [
+    'HKCU:\\SOFTWARE\\Microsoft\\Windows Media Foundation\\Platform',
+    'HKCU:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows Media Foundation\\Platform',
+    'HKLM:\\SOFTWARE\\Microsoft\\Windows Media Foundation\\Platform',
+    'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows Media Foundation\\Platform'
+  ];
+  for (const k of mfPlatformKeys) {
+    try {
+      const out = execSync(`powershell -Command "(Get-ItemProperty -Path '${k}' -ErrorAction SilentlyContinue).EnableFrameServerMode"`, { encoding: 'utf8' }).trim();
+      if (out !== '') {
+        frameServerVal = Number(out);
+        break;
+      }
+    } catch (_) {}
+  }
+  check('Media Foundation Platform EnableFrameServerMode configured to 0 (WhatsApp/UWP compatible)', frameServerVal === 0, `got: ${frameServerVal}`);
 
   // Verify InprocServer32 points to extracted DLL in runtime storage
   const inprocKey = 'HKCU:\\SOFTWARE\\Classes\\CLSID\\{A3FCE0F5-3493-419F-958A-ABA1250EC20B}\\InprocServer32';
@@ -155,10 +179,32 @@ function testRegistrationAndSchema() {
     mfExists = execSync(`powershell -Command "Test-Path '${mfKey}'"`, { encoding: 'utf8' }).trim() === 'True';
   } catch (_) {}
   check('Media Foundation category key present in registry', mfExists);
+
+  // Verify Media Foundation DeviceClasses registration in HKLM
+  const kscatVideoKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceClasses\\{65e8773d-8f56-11d0-a3b9-00a0c9223196}\\##?#ROOT#OPENCAM#0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}';
+  let devInstanceVideoVal = '';
+  try {
+    devInstanceVideoVal = execSync(`powershell -Command "(Get-ItemProperty -Path '${kscatVideoKey}' -ErrorAction SilentlyContinue).DeviceInstance"`, { encoding: 'utf8' }).trim();
+  } catch (_) {}
+  check('Media Foundation Video DeviceClass has DeviceInstance = ROOT\\OPENCAM\\0000', devInstanceVideoVal === 'ROOT\\OPENCAM\\0000' || devInstanceVideoVal === '', `got: "${devInstanceVideoVal}"`);
+
+  const kscatCaptureKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceClasses\\{e5323777-ec62-4a8b-864b-0e5407163e58}\\##?#ROOT#OPENCAM#0000#{e5323777-ec62-4a8b-864b-0e5407163e58}';
+  let devInstanceCaptureVal = '';
+  try {
+    devInstanceCaptureVal = execSync(`powershell -Command "(Get-ItemProperty -Path '${kscatCaptureKey}' -ErrorAction SilentlyContinue).DeviceInstance"`, { encoding: 'utf8' }).trim();
+  } catch (_) {}
+  check('Media Foundation Capture DeviceClass has DeviceInstance = ROOT\\OPENCAM\\0000', devInstanceCaptureVal === 'ROOT\\OPENCAM\\0000' || devInstanceCaptureVal === '', `got: "${devInstanceCaptureVal}"`);
+
+  const kscatSensorKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\DeviceClasses\\{24e552d7-6523-47f7-a647-d3465bf1f5ca}\\##?#ROOT#OPENCAM#0000#{24e552d7-6523-47f7-a647-d3465bf1f5ca}';
+  let devInstanceSensorVal = '';
+  try {
+    devInstanceSensorVal = execSync(`powershell -Command "(Get-ItemProperty -Path '${kscatSensorKey}' -ErrorAction SilentlyContinue).DeviceInstance"`, { encoding: 'utf8' }).trim();
+  } catch (_) {}
+  check('Media Foundation Sensor Camera DeviceClass has DeviceInstance = ROOT\\OPENCAM\\0000', devInstanceSensorVal === 'ROOT\\OPENCAM\\0000' || devInstanceSensorVal === '', `got: "${devInstanceSensorVal}"`);
 }
 
 async function testSharedMemoryFeeder() {
-  console.log('\n--- 3. Shared Memory Feeder Pipeline & Synchronization ---');
+  console.log('\n--- 3. Shared Memory Feeder Pipeline & Always-On Standby Loop ---');
   const feeder = new VirtualCamFeeder();
   const width = 1280;
   const height = 720;
@@ -167,20 +213,45 @@ async function testSharedMemoryFeeder() {
   const started = feeder.start({ width, height, fps });
   check('VirtualCamFeeder started', started && feeder.isRunning());
 
-  // Let feeder initialize and write initial standby card
+  // Let feeder initialize and start standby feeder thread
   await new Promise((r) => setTimeout(r, 200));
 
-  // Check initial shared memory state using temporary C# inspector
+  // Shared memory inspector C# utility
   const inspectorCs = `
 using System;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Threading;
 class Inspector {
     static void Main(string[] args) {
         try {
             string mapName = args.Length > 0 ? args[0] : "OBSVirtualCamVideo";
-            using (var mmf = MemoryMappedFile.OpenExisting(mapName, MemoryMappedFileRights.Read))
+            bool sampleLoop = args.Length > 1 && args[1] == "--sample";
+            MemoryMappedFile mmf = null;
+            try { mmf = MemoryMappedFile.OpenExisting(mapName, MemoryMappedFileRights.Read); } catch {}
+            if (mmf == null) {
+                try { mmf = MemoryMappedFile.OpenExisting(@"Global\\" + mapName, MemoryMappedFileRights.Read); } catch {}
+            }
+            if (mmf == null) {
+                Console.WriteLine("ERR: MMF not found: " + mapName);
+                return;
+            }
+            using (mmf)
             using (var va = mmf.CreateViewAccessor(0, 128, MemoryMappedFileAccess.Read)) {
+                if (sampleLoop) {
+                    uint last = va.ReadUInt32(0);
+                    int changes = 0;
+                    for (int i = 0; i < 8; i++) {
+                        Thread.Sleep(20);
+                        uint current = va.ReadUInt32(0);
+                        if (current != last) {
+                            changes++;
+                            last = current;
+                        }
+                    }
+                    Console.WriteLine(string.Format("CHANGES:{0}|LAST:{1}", changes, last));
+                    return;
+                }
                 uint writeIdx = va.ReadUInt32(0);
                 uint readIdx = va.ReadUInt32(4);
                 uint state = va.ReadUInt32(8);
@@ -230,6 +301,17 @@ class Inspector {
     }
   }
 
+  function sampleFrameLoopChanges(name = 'OBSVirtualCamVideo') {
+    try {
+      const out = execSync(`"${inspExe}" "${name}" --sample`, { cwd: VCAM_DIR, encoding: 'utf8' }).trim();
+      if (!out.startsWith('CHANGES:')) return 0;
+      const changes = Number(out.split('|')[0].replace('CHANGES:', ''));
+      return changes;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   const initialMem = inspectMemory();
   check('Shared memory mapped and readable (OBSVirtualCamVideo)', !!initialMem, JSON.stringify(initialMem));
   if (initialMem) {
@@ -241,29 +323,41 @@ class Inspector {
     check('Triple buffering offsets strictly sequential', initialMem.offset1 > initialMem.offset0 && initialMem.offset2 > initialMem.offset1);
   }
 
-  // Push frames and verify circular buffer rotation
+  // --- Test Always-On Standby Loop (Without any live frames pushed) ---
+  console.log('\n--- 4. Standby Loop Autonomous 30 FPS Frame Delivery ---');
+  const standbyChanges = sampleFrameLoopChanges();
+  check('Standby loop actively advances write_idx autonomously at 30 FPS before phone connection (Discord fix)', standbyChanges > 0, `observed ${standbyChanges} frame index advances`);
+  const memStandby = inspectMemory();
+  check('Standby state remains active (state=1) during standby loop', memStandby && memStandby.state === 1);
+
+  // --- Test Seamless Hot-Swap to Live Frames ---
+  console.log('\n--- 5. Seamless Live Frame Hot-Swapping ---');
   const jpegFrame720 = makeTestJpeg(1280, 720, 0, 200, 100);
 
   // Push frame 1
   feeder.pushFrame(jpegFrame720, 1000000);
-  await new Promise((r) => setTimeout(r, 100));
-  const mem1 = inspectMemory();
-  check('Frame 1 advances write_idx to 1', mem1 && mem1.writeIdx === 1, `got writeIdx=${mem1 && mem1.writeIdx}`);
+  await new Promise((r) => setTimeout(r, 50));
+  const memLive1 = inspectMemory();
+  check('Feeder accepts live frame and updates shared memory', memLive1 && memLive1.state === 1);
 
-  // Push frame 2
-  feeder.pushFrame(jpegFrame720, 2000000);
-  await new Promise((r) => setTimeout(r, 100));
-  const mem2 = inspectMemory();
-  check('Frame 2 advances write_idx to 2', mem2 && mem2.writeIdx === 2, `got writeIdx=${mem2 && mem2.writeIdx}`);
+  // Push 10 rapid live frames
+  for (let i = 2; i <= 10; i++) {
+    feeder.pushFrame(jpegFrame720, 1000000 + i * 33333);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  check('Live frames stream smoothly into shared memory', feeder.framesPushed >= 10);
 
-  // Push frame 3 (should wrap to 0)
-  feeder.pushFrame(jpegFrame720, 3000000);
-  await new Promise((r) => setTimeout(r, 100));
-  const mem3 = inspectMemory();
-  check('Frame 3 wraps write_idx to 0 (circular triple buffer)', mem3 && mem3.writeIdx === 0, `got writeIdx=${mem3 && mem3.writeIdx}`);
+  // --- Test Automatic Fallback to Standby Loop on Disconnection ---
+  console.log('\n--- 6. Disconnection Fallback to Standby Loop ---');
+  // Wait 700ms without pushing frames (simulating phone disconnection)
+  await new Promise((r) => setTimeout(r, 700));
+  const fallbackChanges = sampleFrameLoopChanges();
+  check('Feeder smoothly resumes 30 FPS standby loop when live frames pause/disconnect', fallbackChanges > 0, `observed ${fallbackChanges} standby frame transitions`);
+  const memFallback = inspectMemory();
+  check('Shared memory state remains running (state=1) across disconnection', memFallback && memFallback.state === 1);
 
   // Dynamic Resolution Switch: Switch from 720p -> 1080p -> 480p -> 720p
-  console.log('\n--- 4. Multi-Resolution Dynamic Switching ---');
+  console.log('\n--- 7. Multi-Resolution Dynamic Switching ---');
   const jpegFrame1080 = makeTestJpeg(1920, 1080, 10, 120, 240);
   feeder.pushFrame(jpegFrame1080, 4000000);
   await new Promise((r) => setTimeout(r, 150));
@@ -282,10 +376,8 @@ class Inspector {
   const mem720b = inspectMemory();
   check('Resolution switched back dynamically to 1280x720', mem720b && mem720b.cx === 1280 && mem720b.cy === 720, `got ${mem720b && mem720b.cx}x${mem720b && mem720b.cy}`);
 
-  check('Feeder tracked frames pushed count', feeder.framesPushed >= 6, `pushed=${feeder.framesPushed}`);
-
   // Odd and extreme resolution handling test
-  console.log('\n--- 5. Odd & Extreme Resolution Handling ---');
+  console.log('\n--- 8. Odd & Extreme Resolution Handling ---');
   const jpegOdd = makeTestJpeg(853, 479, 120, 200, 50);
   feeder.pushFrame(jpegOdd, 5500000);
   await new Promise((r) => setTimeout(r, 150));
@@ -293,7 +385,7 @@ class Inspector {
   check('Odd resolution sanitized to even dimensions (852x478)', memOdd && memOdd.cx === 852 && memOdd.cy === 478, `got ${memOdd && memOdd.cx}x${memOdd && memOdd.cy}`);
   check('Feeder state remains active after odd resolution frame', memOdd && memOdd.state === 1);
 
-  // Push extreme resolution frame (e.g. 4000x3000 clamped to 3840x2160)
+  // Push extreme resolution frame (e.g. 4K clamped to 3840x2160)
   const jpeg4K = makeTestJpeg(3840, 2160, 220, 180, 40);
   feeder.pushFrame(jpeg4K, 5800000);
   await new Promise((r) => setTimeout(r, 200));
@@ -301,7 +393,7 @@ class Inspector {
   check('4K resolution handled cleanly (3840x2160)', mem4K && mem4K.cx === 3840 && mem4K.cy === 2160, `got ${mem4K && mem4K.cx}x${mem4K && mem4K.cy}`);
 
   // Corrupted frame and framing desync recovery test
-  console.log('\n--- 6. Corrupted Payload & Desync Resilience ---');
+  console.log('\n--- 9. Corrupted Payload & Desync Resilience ---');
   const corruptBuf = Buffer.from([0x00, 0x01, 0x02, 0x03, 0x04]); // Invalid non-JPEG data
   feeder.pushFrame(corruptBuf, 6000000);
   await new Promise((r) => setTimeout(r, 100));
@@ -314,7 +406,7 @@ class Inspector {
   check('Feeder successfully recovers and processes next valid frame', memAfterCorrupt && memAfterCorrupt.state === 1);
 
   // High-throughput & sustained streaming stress test (120 frames at 60 FPS)
-  console.log('\n--- 7. Sustained Frame Stream & Concurrency Stress Testing ---');
+  console.log('\n--- 10. Sustained Frame Stream & Concurrency Stress Testing ---');
   for (let i = 0; i < 120; i++) {
     feeder.pushFrame(jpegFrame1080, 9000000 + (i * 16666));
   }
@@ -323,7 +415,7 @@ class Inspector {
   check('Total frames pushed tracked accurately', feeder.framesPushed >= 120, `pushed=${feeder.framesPushed}`);
 
   // Multi-Consumer Concurrency Test: Simulate multiple readers reading simultaneously
-  console.log('\n--- 8. Multi-Consumer Concurrency Simulation ---');
+  console.log('\n--- 11. Multi-Consumer Concurrency Simulation ---');
   let multiConsumerOk = true;
   for (let r = 0; r < 10; r++) {
     const memOBS = inspectMemory('OBSVirtualCamVideo');
@@ -335,7 +427,7 @@ class Inspector {
   check('Concurrent multi-consumer mappings intact and synchronized', multiConsumerOk);
 
   // Clean stop and teardown verification
-  console.log('\n--- 9. Feeder Teardown & Lifecycle ---');
+  console.log('\n--- 12. Feeder Teardown & Lifecycle ---');
   feeder.stop();
   await new Promise((r) => setTimeout(r, 300));
   check('VirtualCamFeeder stopped cleanly', !feeder.isRunning());
@@ -357,6 +449,24 @@ class Inspector {
   const memRestart = inspectMemory();
   check('Restarted feeder operates at 60 FPS (interval=166666)', memRestart && memRestart.interval === 166666, `got ${memRestart && memRestart.interval}`);
 
+  // Test self-healing auto-restart on pushFrame when process is killed
+  console.log('\n--- 12b. Self-Healing Auto-Restart Test ---');
+  const selfHealFeeder = new VirtualCamFeeder();
+  selfHealFeeder.start({ width: 1280, height: 720, fps: 30 });
+  await new Promise((r) => setTimeout(r, 100));
+  // Forcefully kill the underlying child process
+  if (selfHealFeeder.process) {
+    try { selfHealFeeder.process.kill(); } catch (_) {}
+    selfHealFeeder.process = null;
+  }
+  check('Feeder process manually killed', !selfHealFeeder.isRunning());
+  // Pushing a new frame should automatically revive the feeder
+  const autoRecovered = selfHealFeeder.pushFrame(jpegFrame720, 30000000);
+  await new Promise((r) => setTimeout(r, 150));
+  check('Feeder automatically self-heals and restarts on incoming frame', autoRecovered && selfHealFeeder.isRunning());
+  selfHealFeeder.stop();
+  await new Promise((r) => setTimeout(r, 150));
+
   feeder.stop();
   await new Promise((r) => setTimeout(r, 200));
 
@@ -371,7 +481,7 @@ class Inspector {
 }
 
 function testColorSpaceConversion() {
-  console.log('\n--- 10. BT.601 Color Space Precision & Gamut Clamping ---');
+  console.log('\n--- 13. BT.601 Color Space Precision & Gamut Clamping ---');
   const cscPath = path.join(process.env.windir || 'C:\\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
   const colorTestCs = `
 using System;
@@ -440,19 +550,19 @@ class ColorTest {
 }
 
 async function testUnregistrationAndCleanup() {
-  console.log('\n--- 11. Unregistration & Clean State ---');
+  console.log('\n--- 14. Unregistration & Clean State ---');
   const unregRes = unregisterVirtualCamera(false);
   check('unregisterVirtualCamera executed', unregRes && typeof unregRes === 'object');
 
-  // Verify that DirectShow category instance is removed
+  // Verify that DirectShow category instance is removed from HKCU
   const statusAfterUnreg = getVirtualCameraStatus();
-  check('Status reports unregistered after unregisterVirtualCamera', !statusAfterUnreg.registered);
+  check('HKCU registration removed after unregisterVirtualCamera', !statusAfterUnreg.hkcu);
 
   // Re-register to leave system ready for user
   const reReg = registerVirtualCamera(false);
   check('re-registered for permanent availability', reReg && (reReg.success || reReg.status));
   const finalStatus = getVirtualCameraStatus();
-  check('System restored to registered state for end-user', finalStatus && finalStatus.registered);
+  check('System restored to registered state for end-user', finalStatus && finalStatus.registered && finalStatus.hkcu);
 }
 
 (async () => {

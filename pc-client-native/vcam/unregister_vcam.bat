@@ -20,6 +20,15 @@ if exist "vcam_feeder.exe" (
     "vcam_feeder.exe" --unregister "%VCAM_DIR%"
 )
 
+reg delete "HKLM\SOFTWARE\Microsoft\Windows Media Foundation\Platform" /v EnableFrameServerMode /f >nul 2>&1
+reg delete "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows Media Foundation\Platform" /v EnableFrameServerMode /f >nul 2>&1
+reg delete "HKCU\SOFTWARE\Microsoft\Windows Media Foundation\Platform" /v EnableFrameServerMode /f >nul 2>&1
+reg delete "HKCU\SOFTWARE\WOW6432Node\Microsoft\Windows Media Foundation\Platform" /v EnableFrameServerMode /f >nul 2>&1
+
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceClasses\{65e8773d-8f56-11d0-a3b9-00a0c9223196}\##?#ROOT#OPENCAM#0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}" /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceClasses\{e5323777-ec62-4a8b-864b-0e5407163e58}\##?#ROOT#OPENCAM#0000#{e5323777-ec62-4a8b-864b-0e5407163e58}" /f >nul 2>&1
+reg delete "HKLM\SYSTEM\CurrentControlSet\Control\DeviceClasses\{24e552d7-6523-47f7-a647-d3465bf1f5ca}\##?#ROOT#OPENCAM#0000#{24e552d7-6523-47f7-a647-d3465bf1f5ca}" /f >nul 2>&1
+
 if exist "%windir%\System32\regsvr32.exe" (
     if exist "obs-virtualcam-module64.dll" "%windir%\System32\regsvr32.exe" /u /s "%VCAM_DIR%\obs-virtualcam-module64.dll"
 )

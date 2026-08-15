@@ -78,7 +78,6 @@ function disconnectStream() {
     try { videoSocket.destroy(); } catch (_) {}
     videoSocket = null;
   }
-  try { vcamFeeder.stop(); } catch (_) {}
 }
 
 function connectVideo(ip, port, codec, width, height) {
@@ -381,8 +380,10 @@ ipcMain.handle('get-vcam-status', async () => {
 app.whenReady().then(() => {
   try {
     ensureFeederBinary();
+    // Start always-on 30 FPS 1080p standby loop for virtual camera consumers
+    vcamFeeder.start({ width: 1920, height: 1080, fps: 30 });
   } catch (err) {
-    console.warn('Initial vcam binary extraction note:', err.message);
+    console.warn('Initial vcam binary extraction/feeder note:', err.message);
   }
   createWindow();
 });
@@ -394,4 +395,18 @@ app.on('will-quit', () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+process.on('exit', () => {
+  try { vcamFeeder.stop(); } catch (_) {}
+});
+
+process.on('SIGINT', () => {
+  try { vcamFeeder.stop(); } catch (_) {}
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  try { vcamFeeder.stop(); } catch (_) {}
+  process.exit(0);
 });
