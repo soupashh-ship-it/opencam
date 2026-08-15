@@ -33,3 +33,6 @@ keystore.properties
 *.log
 *.tmp
 *.sha256
+
+.perch/
+.zcode/

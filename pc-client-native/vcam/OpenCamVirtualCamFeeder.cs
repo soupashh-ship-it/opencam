@@ -39,6 +39,12 @@ namespace OpenCam.VirtualCamera
     public class Feeder
     {
         private const int HEADER_SIZE = 128;
+        // Protocol constants matching obs-studio shared-memory-queue.c exactly
+        private const int FRAME_HEADER_SIZE = 32;  // per-slot header: uint64 timestamp at offset 0, pixel data at +32
+        private const uint STATE_INVALID = 0;
+        private const uint STATE_STARTING = 1;
+        private const uint STATE_READY = 2;
+        private const uint STATE_STOPPING = 3;
         private const uint VIDEO_FORMAT_NV12 = 2;
         private const uint VIDEO_FORMAT_BGRA = 7;
 
@@ -120,8 +126,8 @@ namespace OpenCam.VirtualCamera
                 {
                     try
                     {
-                        // Signal stopped state (state = 0) before unmapping
-                        Marshal.WriteInt32(View, 8, 0);
+                        // Signal stopping state before unmapping so consumers release cleanly
+                        Marshal.WriteInt32(View, 8, (int)STATE_STOPPING);
                     }
                     catch { }
                     UnmapViewOfFile(View);
@@ -155,12 +161,13 @@ namespace OpenCam.VirtualCamera
         private static Thread _standbyThread = null;
         private static Stopwatch _systemStopwatch = Stopwatch.StartNew();
 
-        // Preallocate mapping for up to 4K (3840x2160 NV12 = ~12.5MB per frame * 3 = ~38MB)
+        // Preallocate mapping for up to 4K (3840x2160 NV12 = ~12.5MB per frame * 3 slots = ~38MB)
         // so resolution switches (720p, 1080p, 1440p, 4K) do not fail when consumer apps hold section handles.
         private const int MAX_WIDTH = 3840;
         private const int MAX_HEIGHT = 2160;
         private static readonly int MAX_FRAME_SIZE = (MAX_WIDTH * MAX_HEIGHT * 3) / 2;
-        private static readonly int MAX_TOTAL_SIZE = ((HEADER_SIZE + 31) & ~31) + (3 * ((MAX_FRAME_SIZE + 31) & ~31));
+        private static readonly int MAX_SLOT_SIZE = (MAX_FRAME_SIZE + FRAME_HEADER_SIZE + 31) & ~31;
+        private static readonly int MAX_TOTAL_SIZE = ((HEADER_SIZE + 31) & ~31) + (3 * MAX_SLOT_SIZE);
 
         public static void CleanupSharedMemory()
         {
@@ -201,8 +208,8 @@ namespace OpenCam.VirtualCamera
             }
 
             int alignedHeader = (HEADER_SIZE + 31) & ~31;
-            int alignedFrame = (_frameSize + 31) & ~31;
-            _totalBufferSize = Math.Max(alignedHeader + (3 * alignedFrame), MAX_TOTAL_SIZE);
+            int slotStride = (_frameSize + FRAME_HEADER_SIZE + 31) & ~31;
+            _totalBufferSize = Math.Max(alignedHeader + (3 * slotStride), MAX_TOTAL_SIZE);
             ulong interval = (fps > 0) ? (10000000UL / (ulong)fps) : 333333UL;
 
             // If mappings already exist and are valid, update the QueueHeaders directly without re-creating handles
@@ -216,10 +223,10 @@ namespace OpenCam.VirtualCamera
                         {
                             write_idx = 0,
                             read_idx = 0,
-                            state = 1,
+                            state = STATE_STARTING,
                             offset0 = (uint)alignedHeader,
-                            offset1 = (uint)(alignedHeader + alignedFrame),
-                            offset2 = (uint)(alignedHeader + 2 * alignedFrame),
+                            offset1 = (uint)(alignedHeader + slotStride),
+                            offset2 = (uint)(alignedHeader + 2 * slotStride),
                             type = _currentFormat,
                             cx = (uint)width,
                             cy = (uint)height,
@@ -246,61 +253,48 @@ namespace OpenCam.VirtualCamera
             IntPtr pSa = Marshal.AllocHGlobal(sa.nLength);
             Marshal.StructureToPtr(sa, pSa, false);
 
-            // Create distinct mappings for OBS and OpenCam consumers without duplicate aliases
-            string[] baseNames = new string[]
+            // The obs-virtualcam DLL opens the section with the BARE name (no Global\ prefix),
+            // i.e. the session-local namespace. Creating it as Global\ would make the DLL see a
+            // different (nonexistent) section and never receive frames. Bare name only.
+            string baseName = "OBSVirtualCamVideo";
+
+            IntPtr hMap = IntPtr.Zero;
+            try
             {
-                "OBSVirtualCamVideo",
-                "OBSVirtualCamVideo0",
-                "OpenCamVirtualCamVideo"
-            };
+                hMap = CreateFileMapping(INVALID_HANDLE_VALUE, pSa, PAGE_READWRITE, 0, (uint)_totalBufferSize, baseName);
+            }
+            catch { }
 
-            foreach (var baseName in baseNames)
+            if (hMap != IntPtr.Zero && hMap != INVALID_HANDLE_VALUE)
             {
-                IntPtr hMap = IntPtr.Zero;
-
-                // Try Global namespace first for cross-session/UWP compatibility, fall back to Local
-                try
+                // Pass UIntPtr.Zero to map the full section safely even if created by external process
+                IntPtr view = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, UIntPtr.Zero);
+                if (view != IntPtr.Zero)
                 {
-                    hMap = CreateFileMapping(INVALID_HANDLE_VALUE, pSa, PAGE_READWRITE, 0, (uint)_totalBufferSize, @"Global\" + baseName);
-                }
-                catch { }
+                    var mb = new MappedBuffer { Handle = hMap, View = view, TotalSize = _totalBufferSize, Name = baseName };
+                    _mappedBuffers.Add(mb);
 
-                if (hMap == IntPtr.Zero || hMap == INVALID_HANDLE_VALUE)
-                {
-                    try
+                    // Initialize QueueHeader (STARTING; becomes READY on first frame write)
+                    QueueHeader header = new QueueHeader
                     {
-                        hMap = CreateFileMapping(INVALID_HANDLE_VALUE, pSa, PAGE_READWRITE, 0, (uint)_totalBufferSize, baseName);
-                    }
-                    catch { }
+                        write_idx = 0,
+                        read_idx = 0,
+                        state = STATE_STARTING,
+                        offset0 = (uint)alignedHeader,
+                        offset1 = (uint)(alignedHeader + slotStride),
+                        offset2 = (uint)(alignedHeader + 2 * slotStride),
+                        type = _currentFormat,
+                        cx = (uint)width,
+                        cy = (uint)height,
+                        pad = 0,
+                        interval = interval
+                    };
+
+                    Marshal.StructureToPtr(header, view, false);
                 }
-
-                if (hMap != IntPtr.Zero && hMap != INVALID_HANDLE_VALUE)
+                else
                 {
-                    // Pass UIntPtr.Zero to map the full section safely even if created by external process
-                    IntPtr view = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, UIntPtr.Zero);
-                    if (view != IntPtr.Zero)
-                    {
-                        var mb = new MappedBuffer { Handle = hMap, View = view, TotalSize = _totalBufferSize, Name = baseName };
-                        _mappedBuffers.Add(mb);
-
-                        // Initialize QueueHeader
-                        QueueHeader header = new QueueHeader
-                        {
-                            write_idx = 0,
-                            read_idx = 0,
-                            state = 1,
-                            offset0 = (uint)alignedHeader,
-                            offset1 = (uint)(alignedHeader + alignedFrame),
-                            offset2 = (uint)(alignedHeader + 2 * alignedFrame),
-                            type = _currentFormat,
-                            cx = (uint)width,
-                            cy = (uint)height,
-                            pad = 0,
-                            interval = interval
-                        };
-
-                        Marshal.StructureToPtr(header, view, false);
-                    }
+                    CloseHandle(hMap);
                 }
             }
 
@@ -313,7 +307,7 @@ namespace OpenCam.VirtualCamera
         {
             if (_mappedBuffers.Count == 0 || pixelData == null || pixelData.Length == 0) return;
             int alignedHeader = (HEADER_SIZE + 31) & ~31;
-            int alignedFrame = (_frameSize + 31) & ~31;
+            int slotStride = (_frameSize + FRAME_HEADER_SIZE + 31) & ~31;
             int copyLen = Math.Min(pixelData.Length, _frameSize);
 
             foreach (var mb in _mappedBuffers)
@@ -321,34 +315,38 @@ namespace OpenCam.VirtualCamera
                 if (mb.View == IntPtr.Zero) continue;
                 for (int b = 0; b < 3; b++)
                 {
-                    IntPtr dst = new IntPtr(mb.View.ToInt64() + alignedHeader + (b * alignedFrame));
-                    Marshal.Copy(pixelData, 0, dst, copyLen);
+                    IntPtr slot = new IntPtr(mb.View.ToInt64() + alignedHeader + (b * slotStride));
+                    Marshal.WriteInt64(slot, 0, 0); // timestamp
+                    Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
                 }
-                Marshal.WriteInt32(mb.View, 0, 0); // write_idx = 0
-                Marshal.WriteInt32(mb.View, 8, 1); // state = 1
+                Marshal.WriteInt32(mb.View, 0, 0);          // write_idx = 0
+                Marshal.WriteInt32(mb.View, 8, (int)STATE_READY);
             }
             _writeIndex = 0;
         }
 
-        private static void WriteFrameToSharedMemoryInternal(byte[] pixelData)
+        private static void WriteFrameToSharedMemoryInternal(byte[] pixelData, ulong timestamp)
         {
             if (_mappedBuffers.Count == 0 || pixelData == null || pixelData.Length == 0) return;
 
             uint nextIndex = (_writeIndex + 1) % 3;
             int alignedHeader = (HEADER_SIZE + 31) & ~31;
-            int alignedFrame = (_frameSize + 31) & ~31;
-            int targetOffset = alignedHeader + (int)(nextIndex * alignedFrame);
+            int slotStride = (_frameSize + FRAME_HEADER_SIZE + 31) & ~31;
+            int targetOffset = alignedHeader + (int)(nextIndex * slotStride);
             int copyLen = Math.Min(pixelData.Length, _frameSize);
 
             foreach (var mb in _mappedBuffers)
             {
                 if (mb.View == IntPtr.Zero) continue;
-                IntPtr dst = new IntPtr(mb.View.ToInt64() + targetOffset);
-                Marshal.Copy(pixelData, 0, dst, copyLen);
+                IntPtr slot = new IntPtr(mb.View.ToInt64() + targetOffset);
+                Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
+                Marshal.WriteInt64(slot, 0, (long)timestamp); // per-slot timestamp header
 
-                // Update write_idx and state in header atomically
+                // Publish slot: memory barrier ensures pixel data is visible before the new write_idx,
+                // then mark READY (obs DLL only delivers frames in state == SHARED_QUEUE_STATE_READY)
+                Thread.MemoryBarrier();
                 Marshal.WriteInt32(mb.View, 0, (int)nextIndex); // write_idx at offset 0
-                Marshal.WriteInt32(mb.View, 8, 1);               // state at offset 8 (1 = running)
+                Marshal.WriteInt32(mb.View, 8, (int)STATE_READY); // state at offset 8
             }
 
             _writeIndex = nextIndex;
@@ -358,7 +356,7 @@ namespace OpenCam.VirtualCamera
         {
             lock (_syncLock)
             {
-                WriteFrameToSharedMemoryInternal(pixelData);
+                WriteFrameToSharedMemoryInternal(pixelData, (ulong)_systemStopwatch.ElapsedMilliseconds);
             }
         }
 
@@ -518,7 +516,7 @@ namespace OpenCam.VirtualCamera
                         {
                             if (_standbyBuffer != null && _mappedBuffers.Count > 0)
                             {
-                                WriteFrameToSharedMemoryInternal(_standbyBuffer);
+                                WriteFrameToSharedMemoryInternal(_standbyBuffer, (ulong)_systemStopwatch.ElapsedMilliseconds);
                             }
                         }
                     }
@@ -585,6 +583,10 @@ namespace OpenCam.VirtualCamera
                         }
 
                         int payloadLength = (headerBuf[8] << 24) | (headerBuf[9] << 16) | (headerBuf[10] << 8) | headerBuf[11];
+                        ulong pts100ns = 0;
+                        for (int i = 0; i < 8; i++) pts100ns = (pts100ns << 8) | headerBuf[i];
+                        pts100ns *= 10; // microseconds -> 100ns units (obs video_queue_write timestamp)
+                        if (pts100ns == 0) pts100ns = (ulong)_systemStopwatch.ElapsedMilliseconds * 10000UL;
 
                         // Sanity check: valid frame payload length between 64 bytes and 25 MB
                         if (payloadLength < 64 || payloadLength > 25 * 1024 * 1024)
@@ -631,7 +633,7 @@ namespace OpenCam.VirtualCamera
                                         _standbyBuffer = GenerateStandbyCard(sw, sh, "Waiting for phone connection");
                                     }
                                     ConvertBmpToNv12InPlace(bmp, _currentWidth, _currentHeight, _nv12Buffer);
-                                    WriteFrameToSharedMemoryInternal(_nv12Buffer);
+                                    WriteFrameToSharedMemoryInternal(_nv12Buffer, pts100ns);
                                 }
                             }
                         }
@@ -752,206 +754,72 @@ namespace OpenCam.VirtualCamera
                 // 1. Configure Media Foundation EnableFrameServerMode = 0 for AppContainer / UWP (WhatsApp, Windows Camera)
                 SetFrameServerMode(0);
 
-                // 2. Register DLLs via regsvr32 using correct bitness
-                if (File.Exists(dll64))
+                // 2. Repair: remove leftover registrations from previous OpenCam versions that
+                //    overwrote the OBS filter's own entries with hand-built (broken) data.
+                CleanupLegacyRegistrations();
+
+                // 3. Register the DLLs via their own DllRegisterServer. This writes the correct
+                //    FilterData, pin media types and CLSID entries that DirectShow and Media
+                //    Foundation clients (Discord, WhatsApp, Teams, Chrome) can negotiate with.
+                bool reg64 = RunRegsvr32(dll64, false);
+                bool reg32 = RunRegsvr32(dll32, true);
+
+                if (!reg64 && !reg32)
                 {
-                    try
-                    {
-                        string regsvr64 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
-                        Process p64 = Process.Start(new ProcessStartInfo(regsvr64, string.Format("/s \"{0}\"", dll64)) { CreateNoWindow = true, UseShellExecute = false });
-                        if (p64 != null) p64.WaitForExit(5000);
-                    }
-                    catch { }
+                    Console.Error.WriteLine("Registration failed: regsvr32 failed for both " + dll64 + " and " + dll32);
+                    return false;
                 }
 
-                if (File.Exists(dll32))
+                // 4. Rename only the FriendlyName on the instance entries regsvr32 created.
+                //    FilterData / CLSID / InprocServer32 values are left exactly as the DLL wrote them.
+                bool renamed = false;
+                string[] instanceKeyPaths = new string[]
                 {
-                    try
-                    {
-                        string sysWow64 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SysWOW64");
-                        string regsvr32Path = Directory.Exists(sysWow64)
-                            ? Path.Combine(sysWow64, "regsvr32.exe")
-                            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
-
-                        Process p32 = Process.Start(new ProcessStartInfo(regsvr32Path, string.Format("/s \"{0}\"", dll32)) { CreateNoWindow = true, UseShellExecute = false });
-                        if (p32 != null) p32.WaitForExit(5000);
-                    }
-                    catch { }
-                }
-
-                // Exact DirectShow REGFILTER2 binary data for NV12 video capture pin
-                byte[] filterData = new byte[] {
-                    0x02,0x00,0x00,0x00,0x00,0x00,0x20,0x00,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-                    0x30,0x70,0x69,0x33,0x08,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x00,0x00,
-                    0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x30,0x74,0x79,0x33,0x00,0x00,0x00,0x00,
-                    0x38,0x00,0x00,0x00,0x48,0x00,0x00,0x00,0x76,0x69,0x64,0x73,0x00,0x00,0x10,0x00,
-                    0x80,0x00,0x00,0xaa,0x00,0x38,0x9b,0x71,0x4e,0x56,0x31,0x32,0x00,0x00,0x10,0x00,
-                    0x80,0x00,0x00,0xaa,0x00,0x38,0x9b,0x71
+                    string.Format(@"SOFTWARE\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, OBS_FILTER_CLSID),
+                    string.Format(@"SOFTWARE\Classes\WOW6432Node\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, OBS_FILTER_CLSID),
+                    string.Format(@"SOFTWARE\WOW6432Node\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, OBS_FILTER_CLSID)
                 };
 
-                // 3. Register in DirectShow categories across HKLM, WOW6432Node, and HKCU
-                RegistryKey[] roots = new RegistryKey[] { Registry.LocalMachine, Registry.CurrentUser };
-                foreach (var root in roots)
+                foreach (var keyPath in instanceKeyPaths)
                 {
                     try
                     {
-                        // DirectShow Video Input Category instances ({860BB310-5D01-11d0-BD3B-00A0C911CE86})
-                        string[] instanceGuids = new string[] { OPENCAM_INSTANCE_GUID, OBS_FILTER_CLSID };
-                        foreach (var instGuid in instanceGuids)
+                        using (var key = Registry.LocalMachine.OpenSubKey(keyPath, true))
                         {
-                            using (var catKey = root.CreateSubKey(string.Format(@"SOFTWARE\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid)))
+                            if (key != null)
                             {
-                                if (catKey != null)
-                                {
-                                    catKey.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                    catKey.SetValue("CLSID", OBS_FILTER_CLSID, RegistryValueKind.String);
-                                    catKey.SetValue("FilterData", filterData, RegistryValueKind.Binary);
-                                }
-                            }
-                        }
-
-                        // WOW6432Node for 32-bit DirectShow applications in both HKLM and HKCU
-                        foreach (var instGuid in instanceGuids)
-                        {
-                            string[] wowDshowPaths = new string[]
-                            {
-                                string.Format(@"SOFTWARE\WOW6432Node\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid),
-                                string.Format(@"SOFTWARE\Classes\WOW6432Node\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid)
-                            };
-                            foreach (var p in wowDshowPaths)
-                            {
-                                using (var wowKey = root.CreateSubKey(p))
-                                {
-                                    if (wowKey != null)
-                                    {
-                                        wowKey.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                        wowKey.SetValue("CLSID", OBS_FILTER_CLSID, RegistryValueKind.String);
-                                        wowKey.SetValue("FilterData", filterData, RegistryValueKind.Binary);
-                                    }
-                                }
-                            }
-                        }
-
-                        // COM InprocServer32 registration
-                        using (var clsidKey = root.CreateSubKey(string.Format(@"SOFTWARE\Classes\CLSID\{0}", OBS_FILTER_CLSID)))
-                        {
-                            if (clsidKey != null)
-                            {
-                                clsidKey.SetValue("", "OpenCam Virtual Camera Filter", RegistryValueKind.String);
-                                if (File.Exists(dll64))
-                                {
-                                    using (var inproc = clsidKey.CreateSubKey("InprocServer32"))
-                                    {
-                                        if (inproc != null)
-                                        {
-                                            inproc.SetValue("", dll64, RegistryValueKind.String);
-                                            inproc.SetValue("ThreadingModel", "Both", RegistryValueKind.String);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // WOW6432Node InprocServer32 for 32-bit DLL
-                        if (File.Exists(dll32))
-                        {
-                            string[] wowClsidPaths = new string[]
-                            {
-                                string.Format(@"SOFTWARE\WOW6432Node\Classes\CLSID\{0}", OBS_FILTER_CLSID),
-                                string.Format(@"SOFTWARE\Classes\WOW6432Node\CLSID\{0}", OBS_FILTER_CLSID)
-                            };
-                            foreach (var p in wowClsidPaths)
-                            {
-                                using (var wowClsid = root.CreateSubKey(p))
-                                {
-                                    if (wowClsid != null)
-                                    {
-                                        wowClsid.SetValue("", "OpenCam Virtual Camera Filter", RegistryValueKind.String);
-                                        using (var inproc32 = wowClsid.CreateSubKey("InprocServer32"))
-                                        {
-                                            if (inproc32 != null)
-                                            {
-                                                inproc32.SetValue("", dll32, RegistryValueKind.String);
-                                                inproc32.SetValue("ThreadingModel", "Both", RegistryValueKind.String);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Media Foundation Transforms Categories
-                        string[] mfCats = new string[] { MF_TRANSFORM_CATEGORY_CAPTURE, MF_TRANSFORM_CATEGORY_PROCESSOR };
-                        foreach (var mfCatGuid in mfCats)
-                        {
-                            foreach (var instGuid in instanceGuids)
-                            {
-                                using (var mfCat = root.CreateSubKey(string.Format(@"SOFTWARE\Classes\MediaFoundation\Transforms\Categories\{0}\{1}", mfCatGuid, instGuid)))
-                                {
-                                    if (mfCat != null)
-                                    {
-                                        mfCat.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                        mfCat.SetValue("CLSID", OBS_FILTER_CLSID, RegistryValueKind.String);
-                                    }
-                                }
+                                key.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
+                                renamed = true;
                             }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("Rename skipped (" + keyPath + "): " + ex.Message);
+                    }
                 }
 
-                // 4. Media Foundation & Windows Camera Frame Server DeviceClasses registration
+                // 5. Verify the device entry is actually enumerable
+                bool present = false;
                 try
                 {
-                    string[] deviceCategories = new string[] { KSCATEGORY_CAPTURE_GUID, KSCATEGORY_VIDEO_GUID, KSCATEGORY_SENSOR_CAMERA_GUID };
-                    foreach (var catGuid in deviceCategories)
+                    using (var key = Registry.ClassesRoot.OpenSubKey(string.Format(@"CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, OBS_FILTER_CLSID)))
                     {
-                        string devPath = string.Format(@"SYSTEM\CurrentControlSet\Control\DeviceClasses\{0}\##?#ROOT#OPENCAM#0000#{0}", catGuid);
-                        using (var devClass = Registry.LocalMachine.CreateSubKey(devPath))
-                        {
-                            if (devClass != null)
-                            {
-                                devClass.SetValue("DeviceInstance", @"ROOT\OPENCAM\0000", RegistryValueKind.String);
-                                using (var control = devClass.CreateSubKey("Control"))
-                                {
-                                    if (control != null) control.SetValue("ReferenceCount", 1, RegistryValueKind.DWord);
-                                }
-                                using (var devParams = devClass.CreateSubKey("#"))
-                                {
-                                    if (devParams != null)
-                                    {
-                                        devParams.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                        devParams.SetValue("CLSID", OBS_FILTER_CLSID, RegistryValueKind.String);
-                                    }
-                                }
-                                using (var instParams = devClass.CreateSubKey(string.Format("#{0}", OPENCAM_INSTANCE_GUID)))
-                                {
-                                    if (instParams != null)
-                                    {
-                                        instParams.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                        instParams.SetValue("CLSID", OBS_FILTER_CLSID, RegistryValueKind.String);
-                                    }
-                                }
-                                using (var clsidParams = devClass.CreateSubKey(string.Format("#{0}", OBS_FILTER_CLSID)))
-                                {
-                                    if (clsidParams != null)
-                                    {
-                                        clsidParams.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                        clsidParams.SetValue("CLSID", OBS_FILTER_CLSID, RegistryValueKind.String);
-                                    }
-                                }
-                                using (var globalSettings = devClass.CreateSubKey(@"#\Global Settings"))
-                                {
-                                    if (globalSettings != null)
-                                    {
-                                        globalSettings.SetValue("FriendlyName", "OpenCam Virtual Camera", RegistryValueKind.String);
-                                    }
-                                }
-                            }
-                        }
+                        present = (key != null && key.GetValue("FilterData") is byte[]);
                     }
                 }
                 catch { }
+
+                if (!present)
+                {
+                    Console.Error.WriteLine("Registration failed: DirectShow video-input instance entry missing after regsvr32");
+                    return false;
+                }
+
+                if (!renamed)
+                {
+                    Console.Error.WriteLine("Warning: device remains named \"OBS Virtual Camera\" (rename failed; device still functional)");
+                }
 
                 return true;
             }
@@ -959,6 +827,107 @@ namespace OpenCam.VirtualCamera
             {
                 Console.Error.WriteLine("Registration error: " + ex.Message);
                 return false;
+            }
+        }
+
+        private static bool RunRegsvr32(string dllPath, bool prefer32Bit, bool unregister = false)
+        {
+            if (string.IsNullOrEmpty(dllPath) || !File.Exists(dllPath))
+            {
+                Console.Error.WriteLine("regsvr32 skipped (file not found): " + dllPath);
+                return false;
+            }
+
+            try
+            {
+                string regsvrPath;
+                if (prefer32Bit)
+                {
+                    string sysWow64 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SysWOW64");
+                    regsvrPath = Directory.Exists(sysWow64)
+                        ? Path.Combine(sysWow64, "regsvr32.exe")
+                        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
+                }
+                else
+                {
+                    regsvrPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
+                }
+
+                string args = string.Format("{0}/s \"{1}\"", unregister ? "/u " : "", dllPath);
+                Process p = Process.Start(new ProcessStartInfo(regsvrPath, args) { CreateNoWindow = true, UseShellExecute = false });
+                if (p != null) p.WaitForExit(10000);
+                int code = (p != null && p.HasExited) ? p.ExitCode : -1;
+                if (code != 0)
+                {
+                    Console.Error.WriteLine("regsvr32 exited with " + code + " for " + dllPath + " (may require elevation)");
+                }
+                return code == 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("regsvr32 failed for " + dllPath + ": " + ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Removes registrations written by previous OpenCam versions that are known to break
+        /// DirectShow/Media Foundation enumeration: the duplicate OPENCAM instance GUID, the
+        /// HKCU shadow of the OBS filter CLSID, fake Media Foundation transform categories, and
+        /// fake DeviceClasses device-interface entries (no real devnode backs them).
+        /// </summary>
+        private static void CleanupLegacyRegistrations()
+        {
+            string[] roots = new string[]
+            {
+                @"SOFTWARE\Classes\CLSID",
+                @"SOFTWARE\Classes\WOW6432Node\CLSID",
+                @"SOFTWARE\WOW6432Node\Classes\CLSID"
+            };
+            RegistryKey[] rootKeys = new RegistryKey[] { Registry.LocalMachine, Registry.CurrentUser };
+
+            foreach (var root in rootKeys)
+            {
+                // Duplicate OpenCam instance GUID entries under the DirectShow video-input category
+                foreach (var r in roots)
+                {
+                    TryDeleteKey(root, r + @"\{" + DSHOW_VIDEO_INPUT_CATEGORY + @"}\Instance\" + OPENCAM_INSTANCE_GUID);
+                }
+
+                // HKCU shadow of the OBS CLSID (its InprocServer32 override broke CoCreate for all apps)
+                if (root == Registry.CurrentUser)
+                {
+                    TryDeleteKey(root, @"SOFTWARE\Classes\CLSID\" + OBS_FILTER_CLSID);
+                    TryDeleteKey(root, @"SOFTWARE\Classes\WOW6432Node\CLSID\" + OBS_FILTER_CLSID);
+                    TryDeleteKey(root, @"SOFTWARE\WOW6432Node\Classes\CLSID\" + OBS_FILTER_CLSID);
+                }
+
+                // Fake Media Foundation transform category entries
+                string[] mfCats = new string[] { MF_TRANSFORM_CATEGORY_CAPTURE, MF_TRANSFORM_CATEGORY_PROCESSOR };
+                foreach (var mfCat in mfCats)
+                {
+                    TryDeleteKey(root, string.Format(@"SOFTWARE\Classes\MediaFoundation\Transforms\Categories\{0}\{1}", mfCat, OPENCAM_INSTANCE_GUID));
+                    TryDeleteKey(root, string.Format(@"SOFTWARE\Classes\MediaFoundation\Transforms\Categories\{0}\{1}", mfCat, OBS_FILTER_CLSID));
+                }
+            }
+
+            // Fake device-interface entries with no backing devnode
+            string[] deviceCategories = new string[] { KSCATEGORY_CAPTURE_GUID, KSCATEGORY_VIDEO_GUID, KSCATEGORY_SENSOR_CAMERA_GUID };
+            foreach (var cat in deviceCategories)
+            {
+                TryDeleteKey(Registry.LocalMachine, string.Format(@"SYSTEM\CurrentControlSet\Control\DeviceClasses\{0}\##?#ROOT#OPENCAM#0000#{0}", cat));
+            }
+        }
+
+        private static void TryDeleteKey(RegistryKey root, string subKey)
+        {
+            try
+            {
+                root.DeleteSubKeyTree(subKey, false);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("Cleanup skipped (" + subKey + "): " + ex.Message);
             }
         }
 
@@ -985,73 +954,13 @@ namespace OpenCam.VirtualCamera
                 // 1. Remove FrameServerMode override
                 RemoveFrameServerMode();
 
-                // 2. Unregister DLLs via regsvr32
-                if (File.Exists(dll64))
-                {
-                    try
-                    {
-                        string regsvr64 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
-                        Process p64 = Process.Start(new ProcessStartInfo(regsvr64, string.Format("/u /s \"{0}\"", dll64)) { CreateNoWindow = true, UseShellExecute = false });
-                        if (p64 != null) p64.WaitForExit(5000);
-                    }
-                    catch { }
-                }
+                // 2. Remove all legacy OpenCam-written registrations (duplicates, shadows, fake device entries)
+                CleanupLegacyRegistrations();
 
-                if (File.Exists(dll32))
-                {
-                    try
-                    {
-                        string sysWow64 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "SysWOW64");
-                        string regsvr32Path = Directory.Exists(sysWow64)
-                            ? Path.Combine(sysWow64, "regsvr32.exe")
-                            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "regsvr32.exe");
-
-                        Process p32 = Process.Start(new ProcessStartInfo(regsvr32Path, string.Format("/u /s \"{0}\"", dll32)) { CreateNoWindow = true, UseShellExecute = false });
-                        if (p32 != null) p32.WaitForExit(5000);
-                    }
-                    catch { }
-                }
-
-                // 3. Remove DirectShow and MediaFoundation Categories across roots
-                RegistryKey[] roots = new RegistryKey[] { Registry.LocalMachine, Registry.CurrentUser };
-                foreach (var root in roots)
-                {
-                    string[] instanceGuids = new string[] { OPENCAM_INSTANCE_GUID, OBS_FILTER_CLSID };
-                    foreach (var instGuid in instanceGuids)
-                    {
-                        try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid), false); } catch { }
-                        try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\Classes\WOW6432Node\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid), false); } catch { }
-                        try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\WOW6432Node\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid), false); } catch { }
-                    }
-
-                    try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\Classes\CLSID\{0}", OBS_FILTER_CLSID), false); } catch { }
-                    try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\Classes\WOW6432Node\CLSID\{0}", OBS_FILTER_CLSID), false); } catch { }
-                    try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\WOW6432Node\Classes\CLSID\{0}", OBS_FILTER_CLSID), false); } catch { }
-
-                    string[] mfCats = new string[] { MF_TRANSFORM_CATEGORY_CAPTURE, MF_TRANSFORM_CATEGORY_PROCESSOR };
-                    foreach (var mfCatGuid in mfCats)
-                    {
-                        foreach (var instGuid in instanceGuids)
-                        {
-                            try { root.DeleteSubKeyTree(string.Format(@"SOFTWARE\Classes\MediaFoundation\Transforms\Categories\{0}\{1}", mfCatGuid, instGuid), false); } catch { }
-                        }
-                    }
-                }
-
-                // 4. Remove DeviceClasses in HKLM
-                try
-                {
-                    string[] deviceCategories = new string[] { KSCATEGORY_CAPTURE_GUID, KSCATEGORY_VIDEO_GUID, KSCATEGORY_SENSOR_CAMERA_GUID };
-                    foreach (var catGuid in deviceCategories)
-                    {
-                        try
-                        {
-                            Registry.LocalMachine.DeleteSubKeyTree(string.Format(@"SYSTEM\CurrentControlSet\Control\DeviceClasses\{0}\##?#ROOT#OPENCAM#0000#{0}", catGuid), false);
-                        }
-                        catch { }
-                    }
-                }
-                catch { }
+                // 3. Unregister the DLLs through their own DllUnregisterServer (removes the
+                //    DirectShow instance entries and CLSID keys regsvr32 created)
+                RunRegsvr32(dll64, false, unregister: true);
+                RunRegsvr32(dll32, true, unregister: true);
 
                 return true;
             }
@@ -1064,118 +973,44 @@ namespace OpenCam.VirtualCamera
 
         public static bool CheckStatus()
         {
-            bool hkcuDirectShow = false;
-            bool hklmDirectShow = false;
             bool directShow = false;
-            bool mediaFoundation = false;
+            bool filterDataOk = false;
+            bool dllExists = false;
             int frameServerMode = -1;
+            string friendlyName = "OBS Virtual Camera";
 
-            string[] instanceGuids = new string[] { OPENCAM_INSTANCE_GUID, OBS_FILTER_CLSID };
-
-            // 1. Check HKCU DirectShow
+            // 1. The authoritative device entry is the DirectShow video-input instance the DLL's
+            //    own DllRegisterServer created (keyed by the OBS filter CLSID itself).
             try
             {
-                foreach (var instGuid in instanceGuids)
+                using (var key = Registry.ClassesRoot.OpenSubKey(string.Format(@"CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, OBS_FILTER_CLSID)))
                 {
-                    using (var key = Registry.CurrentUser.OpenSubKey(string.Format(@"SOFTWARE\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid)))
+                    if (key != null)
                     {
-                        if (key != null)
-                        {
-                            var fn = key.GetValue("FriendlyName") as string;
-                            if (!string.IsNullOrEmpty(fn) && fn.Contains("OpenCam"))
-                            {
-                                hkcuDirectShow = true;
-                                break;
-                            }
-                        }
+                        directShow = true;
+                        filterDataOk = key.GetValue("FilterData") is byte[];
+                        var fn = key.GetValue("FriendlyName") as string;
+                        if (!string.IsNullOrEmpty(fn)) friendlyName = fn;
                     }
                 }
             }
             catch { }
 
-            // 2. Check HKLM DirectShow
+            // 2. Verify the registered InprocServer32 DLL actually exists on disk
             try
             {
-                foreach (var instGuid in instanceGuids)
+                using (var key = Registry.ClassesRoot.OpenSubKey(string.Format(@"CLSID\{0}\InprocServer32", OBS_FILTER_CLSID)))
                 {
-                    using (var key = Registry.LocalMachine.OpenSubKey(string.Format(@"SOFTWARE\Classes\CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid)))
+                    var dllPath = key != null ? key.GetValue("") as string : null;
+                    if (!string.IsNullOrEmpty(dllPath) && File.Exists(dllPath))
                     {
-                        if (key != null)
-                        {
-                            var fn = key.GetValue("FriendlyName") as string;
-                            if (!string.IsNullOrEmpty(fn) && fn.Contains("OpenCam"))
-                            {
-                                hklmDirectShow = true;
-                                break;
-                            }
-                        }
+                        dllExists = true;
                     }
                 }
             }
             catch { }
 
-            // 3. Check HKCR DirectShow
-            bool hkcrDirectShow = false;
-            try
-            {
-                foreach (var instGuid in instanceGuids)
-                {
-                    using (var key = Registry.ClassesRoot.OpenSubKey(string.Format(@"CLSID\{0}\Instance\{1}", DSHOW_VIDEO_INPUT_CATEGORY, instGuid)))
-                    {
-                        if (key != null)
-                        {
-                            var fn = key.GetValue("FriendlyName") as string;
-                            if (!string.IsNullOrEmpty(fn) && fn.Contains("OpenCam"))
-                            {
-                                hkcrDirectShow = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            catch { }
-
-            directShow = hkcuDirectShow || hklmDirectShow || hkcrDirectShow;
-
-            // 4. Media Foundation Transforms & DeviceClasses check across roots
-            RegistryKey[] checkRoots = new RegistryKey[] { Registry.CurrentUser, Registry.LocalMachine, Registry.ClassesRoot };
-            foreach (var root in checkRoots)
-            {
-                if (mediaFoundation) break;
-                try
-                {
-                    string prefix = (root == Registry.ClassesRoot) ? "" : @"SOFTWARE\Classes\";
-                    foreach (var instGuid in instanceGuids)
-                    {
-                        using (var key = root.OpenSubKey(string.Format(@"{0}MediaFoundation\Transforms\Categories\{1}\{2}", prefix, MF_TRANSFORM_CATEGORY_CAPTURE, instGuid)))
-                        {
-                            if (key != null)
-                            {
-                                mediaFoundation = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                catch { }
-            }
-
-            // 5. Media Foundation DeviceClasses check in HKLM
-            if (!mediaFoundation)
-            {
-                try
-                {
-                    string devPath = string.Format(@"SYSTEM\CurrentControlSet\Control\DeviceClasses\{0}\##?#ROOT#OPENCAM#0000#{0}", KSCATEGORY_VIDEO_GUID);
-                    using (var devKey = Registry.LocalMachine.OpenSubKey(devPath))
-                    {
-                        if (devKey != null) mediaFoundation = true;
-                    }
-                }
-                catch { }
-            }
-
-            // 6. FrameServer mode check in registry
+            // 3. FrameServer mode check in registry (0 = required for WhatsApp / UWP enumeration)
             try
             {
                 string[] mfPlatformPaths = new string[]
@@ -1206,16 +1041,17 @@ namespace OpenCam.VirtualCamera
             }
             catch { }
 
-            bool isRegistered = directShow;
-            Console.WriteLine(string.Format("{{\"registered\":{0},\"directShow\":{1},\"mediaFoundation\":{2},\"hkcu\":{3},\"hklm\":{4},\"frameServerMode\":{5},\"friendlyName\":\"OpenCam Virtual Camera\"}}",
-                isRegistered ? "true" : "false",
+            bool healthy = directShow && filterDataOk && dllExists;
+            Console.WriteLine(string.Format("{{\"registered\":{0},\"directShow\":{1},\"mediaFoundation\":{2},\"filterData\":{3},\"dllExists\":{4},\"frameServerMode\":{5},\"friendlyName\":\"{6}\"}}",
+                healthy ? "true" : "false",
                 directShow ? "true" : "false",
-                mediaFoundation ? "true" : "false",
-                hkcuDirectShow ? "true" : "false",
-                hklmDirectShow ? "true" : "false",
-                frameServerMode));
+                frameServerMode == 0 ? "true" : "false",
+                filterDataOk ? "true" : "false",
+                dllExists ? "true" : "false",
+                frameServerMode,
+                friendlyName.Replace("\"", "")));
 
-            return isRegistered;
+            return healthy;
         }
 
         static int Main(string[] args)
