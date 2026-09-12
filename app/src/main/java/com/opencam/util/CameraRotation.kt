@@ -8,31 +8,44 @@ object CameraRotation {
      * Quantizes an orientation angle (0..359 from OrientationEventListener)
      * into one of the four cardinal rotation steps (0, 90, 180, 270).
      */
-    fun roundOrientation(orientation: Int): Int = when (normalize(orientation)) {
-        in 45..134 -> 90
-        in 135..224 -> 180
-        in 225..314 -> 270
-        else -> 0
+    fun roundOrientation(orientation: Int): Int {
+        if (orientation < 0) return 0
+        return when (normalize(orientation)) {
+            in 45..134 -> 90
+            in 135..224 -> 180
+            in 225..314 -> 270
+            else -> 0
+        }
     }
 
     /**
      * Calculates the clockwise rotation angle in degrees required to make the stream upright
-     * given the camera sensor orientation, device orientation, and whether the camera is front-facing.
+     * given the camera sensor orientation and physical device orientation.
      *
-     * In accordance with the Android Camera2 specification (CaptureRequest.JPEG_ORIENTATION):
-     * - For back-facing cameras: (sensorOrientation + deviceOrientation) % 360
-     * - For front-facing cameras: (sensorOrientation - deviceOrientation) % 360
+     * In OpenCam's streaming pipeline, front-camera frames are horizontally mirrored
+     * to cancel the HAL selfie mirror (or apply user mirroring). Because horizontal reflection
+     * conjugates 2D rotation (M * R(theta) = R(-theta) * M), the vertical alignment of the
+     * image is preserved identically for both back and front cameras:
+     *   rotation = (sensorOrientation + deviceOrientationDeg) % 360
+     *
+     * For example, on standard devices:
+     * - Back camera (sensor 90°):
+     *   - Portrait (0°): 90°
+     *   - Landscape right / clockwise tilt (90°): 180°
+     *   - Inverted portrait (180°): 270°
+     *   - Landscape left / counter-clockwise tilt (270°): 0°
+     * - Front camera (sensor 270°):
+     *   - Portrait (0°): 270°
+     *   - Landscape right / clockwise tilt (90°): 0°
+     *   - Inverted portrait (180°): 90°
+     *   - Landscape left / counter-clockwise tilt (270°): 180°
      */
     fun calculateStreamRotation(
         sensorOrientation: Int,
         deviceOrientationDeg: Int,
-        isFrontFacing: Boolean,
+        isFrontFacing: Boolean = false,
     ): Int {
-        return if (isFrontFacing) {
-            normalize(sensorOrientation - deviceOrientationDeg)
-        } else {
-            normalize(sensorOrientation + deviceOrientationDeg)
-        }
+        return normalize(sensorOrientation + deviceOrientationDeg)
     }
 }
 
