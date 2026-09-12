@@ -26,8 +26,8 @@ android {
         applicationId = "com.opencam"
         minSdk = 26
         targetSdk = 36
-        versionCode = 15
-        versionName = "1.6.6"
+        versionCode = 16
+        versionName = "1.6.7"
     }
 
     signingConfigs {
@@ -69,6 +69,10 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -91,6 +95,7 @@ dependencies {
     implementation(libs.zxing.core)
 
     debugImplementation(libs.androidx.ui.tooling)
+    testImplementation("junit:junit:4.13.2")
 }
 
 

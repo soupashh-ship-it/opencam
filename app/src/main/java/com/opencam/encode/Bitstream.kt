@@ -24,8 +24,15 @@ object Bitstream {
     fun toAnnexB(data: ByteArray, lengthSize: Int = 4): ByteArray {
         if (data.isEmpty() || lengthSize !in 1..4) return data
 
-        // Try a complete length-prefixed parse first. This correctly handles the
-        // ambiguous AVCC case where the first NAL length itself is 00 00 00 01.
+        // Fast path: already Annex-B with 4-byte start code (00 00 00 01) - skip processing/allocation entirely.
+        if (lengthSize == 4 && data.size >= 4 &&
+            data[0] == 0.toByte() && data[1] == 0.toByte() &&
+            data[2] == 0.toByte() && data[3] == 1.toByte()
+        ) {
+            return data
+        }
+
+        // Try a complete length-prefixed parse first.
         convertLengthPrefixed(data, lengthSize)?.let { return it }
         return data
     }

@@ -20,10 +20,12 @@ const vcamFeeder = new VirtualCamFeeder();
 
 // Connection bookkeeping (see retry policy in scheduleReconnect).
 let connectAttempts = 0;
+let consecutiveReconnects = 0;
 let framesEverReceived = false;
 let lastConnectError = null;
 let connectionGeneration = 0;
 let reconnectTimer = null;
+let lastErrorTime = 0;
 
 // How many failed attempts before we give up and ask the user to act.
 const MAX_CONNECT_ATTEMPTS = 9;
@@ -110,6 +112,7 @@ function connectVideo(ip, port, codec, width, height) {
       // A frame means the stream is genuinely live: reset the failure counter.
       framesEverReceived = true;
       connectAttempts = 0;
+      consecutiveReconnects = 0;
       try { vcamFeeder.pushFrame(payload, pts); } catch (_) {}
       if (!stopRequested && mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('video-frame', payload);
@@ -144,6 +147,7 @@ function connectVideo(ip, port, codec, width, height) {
       } else {
         sendStatus('error', `Connection error: ${err.message}`);
       }
+      lastErrorTime = Date.now();
     }
   });
 
@@ -163,8 +167,10 @@ function scheduleReconnect(ip, port, codec, width, height) {
   connectAttempts++;
 
   // Once video has flowed, a drop is just a blip — reconnect quickly.
-  if (framesEverReceived) {
-    sendStatus('reconnecting', 'Stream dropped — reconnecting…');
+  if (framesEverReceived && ++consecutiveReconnects <= 30) {
+    if (Date.now() - lastErrorTime >= 2000) {
+      sendStatus('reconnecting', 'Stream dropped — reconnecting…');
+    }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height);
@@ -174,13 +180,17 @@ function scheduleReconnect(ip, port, codec, width, height) {
 
   // Never got a single frame: escalating backoff, then give up with guidance.
   if (connectAttempts < 4) {
-    sendStatus('reconnecting', `Retrying (${connectAttempts}/${MAX_CONNECT_ATTEMPTS})…`);
+    if (Date.now() - lastErrorTime >= 2000) {
+      sendStatus('reconnecting', `Retrying (${connectAttempts}/${MAX_CONNECT_ATTEMPTS})…`);
+    }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height);
     }, 1500);
   } else if (connectAttempts < MAX_CONNECT_ATTEMPTS) {
-    sendStatus('reconnecting', `Still no video — retrying (${connectAttempts}/${MAX_CONNECT_ATTEMPTS})…`);
+    if (Date.now() - lastErrorTime >= 2000) {
+      sendStatus('reconnecting', `Still no video — retrying (${connectAttempts}/${MAX_CONNECT_ATTEMPTS})…`);
+    }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height);
@@ -191,7 +201,7 @@ function scheduleReconnect(ip, port, codec, width, height) {
       'failed',
       `Could not connect to ${ip}:${port}. Check: (1) the OpenCam app is open and streaming, ` +
         '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct. If the phone app is ' +
-        'outdated, update it to v1.6.2 or newer. Press Connect to try again.'
+        'outdated, update it to v1.6.7 or newer. Press Connect to try again.'
     );
   }
 }
@@ -248,6 +258,7 @@ function pushSettings(ip, port, params) {
 // ---------------------------------------------------------------------------
 ipcMain.handle('connect-stream', async (_event, { ip, port, codec, width, height }) => {
   connectAttempts = 0;
+  consecutiveReconnects = 0;
   framesEverReceived = false;
   lastConnectError = null;
   connectVideo(ip, port, codec, width, height);
@@ -274,7 +285,7 @@ ipcMain.handle('save-snapshot', async (_event, dataUrl) => {
     const picturesDir = app.getPath('pictures');
     const filename = `OpenCam_${Date.now()}.png`;
     const filePath = path.join(picturesDir, filename);
-    fs.writeFileSync(filePath, base64Data, 'base64');
+    await fs.promises.writeFile(filePath, base64Data, 'base64');
     return { success: true, path: filePath };
   } catch (err) {
     return { success: false, error: err.message };

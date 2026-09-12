@@ -139,7 +139,7 @@ class StreamServer(
         ThreadFactory { runnable ->
             Thread(runnable, "opencam-server-conn-${threadNumber.incrementAndGet()}")
         },
-        ThreadPoolExecutor.AbortPolicy(),
+        ThreadPoolExecutor.CallerRunsPolicy(),
     )
 
     fun start(): Boolean {
@@ -165,6 +165,8 @@ class StreamServer(
             val socket = try {
                 serverSocket?.accept()
             } catch (_: Exception) {
+                if (serverSocket?.isClosed == true) break
+                Thread.sleep(100)
                 null
             } ?: continue
             try {
@@ -231,7 +233,12 @@ class StreamServer(
                 }
                 is Protocol.Request.Battery -> {
                     val value = callbacks.batteryPercent().coerceIn(0, 100).toString()
-                    respond(socket, "HTTP/1.1 200 OK\r\nContent-Length: ${value.length}\r\nConnection: close\r\n\r\n$value")
+                    val valueBytes = value.toByteArray(Charsets.UTF_8)
+                    respond(
+                        socket, 
+                        "HTTP/1.1 200 OK\r\nContent-Length: ${valueBytes.size}\r\nConnection: close\r\n\r\n",
+                        valueBytes
+                    )
                 }
                 is Protocol.Request.Tally -> {
                     callbacks.onTally(request.state)
@@ -240,10 +247,12 @@ class StreamServer(
                 is Protocol.Request.Ping -> respond(socket, EMPTY_OK)
                 is Protocol.Request.Status -> {
                     val body = callbacks.statusJson()
+                    val bodyBytes = body.toByteArray(Charsets.UTF_8)
                     respond(
                         socket,
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
-                            "Content-Length: ${body.length}\r\nConnection: close\r\n\r\n$body",
+                            "Content-Length: ${bodyBytes.size}\r\nConnection: close\r\n\r\n",
+                        bodyBytes,
                     )
                 }
                 is Protocol.Request.Settings -> {
@@ -317,6 +326,17 @@ class StreamServer(
         try {
             socket.getOutputStream().apply {
                 write(text.toByteArray(Charsets.UTF_8))
+                flush()
+            }
+        } catch (_: IOException) {
+        }
+    }
+
+    private fun respond(socket: Socket, text: String, body: ByteArray) {
+        try {
+            socket.getOutputStream().apply {
+                write(text.toByteArray(Charsets.UTF_8))
+                write(body)
                 flush()
             }
         } catch (_: IOException) {

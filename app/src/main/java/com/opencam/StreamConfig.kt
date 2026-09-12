@@ -59,7 +59,16 @@ data class StreamConfig(
     val eisEnabled: Boolean = false,
     /** Horizontally flips the stream (and preview) like DroidCam's mirror effect. */
     val mirror: Boolean = false,
-)
+) {
+    fun sanitized(): StreamConfig = copy(
+        width = width.coerceIn(2, 7680),
+        height = height.coerceIn(2, 4320),
+        fps = fps.coerceIn(1, 120),
+        bitrateMbps = bitrateMbps.coerceIn(1, 100),
+        jpegQuality = jpegQuality.coerceIn(1, 100),
+        port = port.coerceIn(1024, 65535),
+    )
+}
 
 val RESOLUTION_PRESETS: List<Pair<Int, Int>> = listOf(
     640 to 480,
@@ -77,4 +86,5 @@ val QUALITY_PRESETS: List<Triple<String, Pair<Int, Int>, Int>> = listOf(
     Triple("Normal", 1280 to 720, 5),
     Triple("High", 1920 to 1080, 8),
     Triple("Ultra", 2560 to 1440, 12),
+    Triple("4K", 3840 to 2160, 20),
 )

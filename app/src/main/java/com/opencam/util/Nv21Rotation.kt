@@ -13,6 +13,10 @@ object Nv21Rotation {
         val frameSize = width * height * 3 / 2
         require(source.size >= frameSize && destination.size >= frameSize)
         val rotation = CameraRotation.normalize(rotationDegrees)
+        if (rotation == 0) {
+            System.arraycopy(source, 0, destination, 0, frameSize)
+            return
+        }
         require(rotation == 90 || rotation == 180 || rotation == 270)
         val outputWidth = if (rotation == 90 || rotation == 270) height else width
         val outputHeight = if (rotation == 90 || rotation == 270) width else height

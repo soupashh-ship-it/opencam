@@ -7,7 +7,7 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 
 object QrUtils {
-    fun generate(text: String, sizePx: Int = 1024): Bitmap? {
+    fun generate(text: String, sizePx: Int = 512): Bitmap? {
         if (sizePx <= 0) return null
         return try {
             val hints = mapOf(

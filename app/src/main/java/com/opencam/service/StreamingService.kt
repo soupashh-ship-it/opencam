@@ -92,14 +92,16 @@ class StreamingService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent)
             .addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                getString(R.string.notification_stop),
-                stopIntent,
+                Notification.Action.Builder(
+                    android.graphics.drawable.Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                    getString(R.string.notification_stop),
+                    stopIntent,
+                ).build()
             )
             .build()
     }

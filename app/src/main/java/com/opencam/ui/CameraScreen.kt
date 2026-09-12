@@ -134,11 +134,7 @@ fun CameraApp() {
         }
     }
 
-    LaunchedEffect(permissionGranted) {
-        if (permissionGranted) {
-            StreamingService.start(context)
-        }
-    }
+
 
     DisposableEffect(context, config.keepScreenOn) {
         val activity = context.findActivity()
@@ -171,7 +167,7 @@ private fun CameraScreen(
     var showQr by remember { mutableStateOf(false) }
     var showZoom by remember { mutableStateOf(false) }
     // Reset the zoom UI whenever the camera switches — the new camera starts at 1x.
-    var zoomScale by remember(config.lens) { mutableFloatStateOf(1f) }
+    var zoomScale by remember(state.cameraId) { mutableFloatStateOf(1f) }
 
     Box(
         Modifier
@@ -356,7 +352,7 @@ private fun CameraPreview(
             .pointerInputTapToFocus(viewModel)
             .pointerInput(Unit) {
                 detectTransformGestures { _, _, zoomChange, _ ->
-                    onZoomChange((currentZoom * zoomChange).coerceIn(1f, maxZoom))
+                    onZoomChange((currentZoom * zoomChange).coerceIn(1f, maxOf(1f, maxZoom)))
                 }
             },
         factory = { ctx ->
@@ -401,9 +397,10 @@ private fun CameraPreview(
     }
 }
 
-private tailrec fun Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
+private tailrec fun Context.findActivity(depth: Int = 0): Activity? = when {
+    depth > 20 -> null
+    this is Activity -> this
+    this is ContextWrapper -> baseContext.findActivity(depth + 1)
     else -> null
 }
 
@@ -879,8 +876,8 @@ private fun SettingsSheet(
                 onValueChange = { v ->
                     viewModel.updateConfig { it.copy(bitrateMbps = v.roundToInt()) }
                 },
-                valueRange = 1f..20f,
-                steps = 18
+                valueRange = 1f..50f,
+                steps = 48
             )
 
             Text(

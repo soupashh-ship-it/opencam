@@ -113,7 +113,7 @@ class StreamManager(context: Context) {
      */
     private var lastClientRequested: Triple<Codec, Int, Int>? = null
 
-    private var deviceOrientationDegrees = 0
+    @Volatile private var deviceOrientationDegrees = 0
 
     private val orientationEventListener = object : OrientationEventListener(appContext) {
         override fun onOrientationChanged(orientation: Int) {
@@ -125,10 +125,12 @@ class StreamManager(context: Context) {
                 else -> 0
             }
             if (newDeg != deviceOrientationDegrees) {
-                deviceOrientationDegrees = newDeg
                 managerHandler.post {
-                    if (started.get()) {
-                        scheduleRebuild()
+                    if (newDeg != deviceOrientationDegrees) {
+                        deviceOrientationDegrees = newDeg
+                        if (started.get()) {
+                            scheduleRebuild()
+                        }
                     }
                 }
             }
@@ -879,14 +881,7 @@ class StreamManager(context: Context) {
         return even(width) to even(height)
     }
 
-    private fun sanitizeConfig(config: StreamConfig): StreamConfig = config.copy(
-        width = config.width.coerceIn(2, 7680),
-        height = config.height.coerceIn(2, 4320),
-        fps = config.fps.coerceIn(1, 120),
-        bitrateMbps = config.bitrateMbps.coerceIn(1, 100),
-        jpegQuality = config.jpegQuality.coerceIn(1, 100),
-        port = config.port.coerceIn(1024, 65535),
-    )
+    private fun sanitizeConfig(config: StreamConfig): StreamConfig = config.sanitized()
 
     private fun loadConfig(): StreamConfig {
         val defaults = StreamConfig()

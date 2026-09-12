@@ -64,7 +64,7 @@ function startMockPhone(port) {
 
       if (method === 'GET' && path.startsWith('/v1/status')) {
         const body = JSON.stringify({
-          version: '1.6.2', codec: currentConfig.codec,
+          version: '1.6.7', codec: currentConfig.codec,
           width: currentConfig.w, height: currentConfig.h,
           streamWidth: currentConfig.w, streamHeight: currentConfig.h,
           fps: 30, battery: 87, running: true,

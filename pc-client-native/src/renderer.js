@@ -136,6 +136,8 @@ function setUiState(state, message) {
     connectionDot.className = 'dot connecting';
   } else {
     isConnected = false;
+    incomingFrameSeq = 0;
+    lastRenderedSeq = 0;
     connectionDot.className = 'dot disconnected';
     btnConnectText.textContent = 'Connect Stream';
     btnConnect.className = 'btn btn-primary';
@@ -171,17 +173,25 @@ function startFrameWatchdog() {
     if (!hasRenderedFrame && isConnected) {
       watchdogShown = true;
       hudStatusText.textContent =
-        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.2+)';
+        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.7+)';
       showToast('No video frames received — update the phone app to the latest version', 5000);
     }
   }, 6000);
 }
 
 // IPC Frame Stream Consumer
+let incomingFrameSeq = 0;
+let lastRenderedSeq = 0;
 window.api.onVideoFrame(async (buffer) => {
+  const seq = ++incomingFrameSeq;
   try {
     const blob = new Blob([buffer], { type: 'image/jpeg' });
     const bitmap = await createImageBitmap(blob);
+    if (seq < lastRenderedSeq) {
+      bitmap.close();
+      return;
+    }
+    lastRenderedSeq = seq;
     if (currentFrameBitmap) {
       currentFrameBitmap.close();
     }
@@ -312,7 +322,7 @@ function startStatusPolling() {
     if (!ip) return;
     statusPollInFlight = true;
     try {
-      const status = await window.api.getStatus(ip, port);
+      const status = await window.api.getStatus(ip, port).catch(() => null);
       if (status) syncStatusToUi(status);
     } finally {
       statusPollInFlight = false;
@@ -334,7 +344,7 @@ function stopStatusPolling() {
 // ---------------------------------------------------------------------------
 btnConnect.addEventListener('click', () => {
   const ip = ipInput.value.trim();
-  const port = parseInt(portInput.value.trim(), 10);
+  const port = parseInt(portInput.value.trim(), 10) || 4747;
   const codec = effectiveCodec(); // always 'jpg' in this build
   const [w, h] = selectRes.value.split('x').map((v) => parseInt(v, 10));
 

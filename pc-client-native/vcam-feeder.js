@@ -82,8 +82,14 @@ function extractVcamBinaries() {
   }
 }
 
+let feederBinaryVerified = false;
+
 /** Ensures the native feeder binary is compiled, extracted, and up-to-date. */
-function ensureFeederBinary() {
+function ensureFeederBinary(force = false) {
+  if (feederBinaryVerified && !force && fs.existsSync(FEEDER_EXE)) {
+    return true;
+  }
+
   // 1. Always extract bundled binaries to permanent physical runtime location first
   extractVcamBinaries();
 
@@ -94,7 +100,8 @@ function ensureFeederBinary() {
 
   const csc = cscPaths.find((p) => fs.existsSync(p));
   if (!csc || !fs.existsSync(FEEDER_SOURCE)) {
-    return fs.existsSync(FEEDER_EXE);
+    feederBinaryVerified = fs.existsSync(FEEDER_EXE);
+    return feederBinaryVerified;
   }
 
   // Recompile in RUNTIME_VCAM_DIR if binary is missing or source is newer
@@ -114,6 +121,7 @@ function ensureFeederBinary() {
   }
 
   if (!needsCompile) {
+    feederBinaryVerified = true;
     return true;
   }
 
@@ -126,10 +134,12 @@ function ensureFeederBinary() {
         fs.copyFileSync(FEEDER_EXE, bundledExe);
       }
     } catch (_) {}
-    return fs.existsSync(FEEDER_EXE);
+    feederBinaryVerified = fs.existsSync(FEEDER_EXE);
+    return feederBinaryVerified;
   } catch (err) {
     console.error('Failed to compile virtual camera feeder binary:', err);
-    return fs.existsSync(FEEDER_EXE);
+    feederBinaryVerified = fs.existsSync(FEEDER_EXE);
+    return feederBinaryVerified;
   }
 }
 
@@ -267,6 +277,9 @@ function getVirtualCameraStatus() {
   try {
     const res = spawnSync(FEEDER_EXE, ['--status'], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8', timeout: 5000 });
     const stdout = (res.stdout || '').trim();
+    if (!stdout || stdout.length === 0) {
+      return { registered: false, directShow: false, mediaFoundation: false, error: 'Empty response' };
+    }
     const jsonMatch = stdout.match(/\{[\s\S]*"registered"[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);

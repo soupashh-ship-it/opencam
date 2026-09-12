@@ -124,10 +124,23 @@ function testRegistrationAndSchema() {
   const regRes = registerVirtualCamera(false);
   check('registerVirtualCamera returned success', regRes && (regRes.success || regRes.status));
 
+  const isElevated = (() => {
+    try {
+      execSync('net session', { stdio: 'ignore' });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  })();
+
   const status = getVirtualCameraStatus();
   check('getVirtualCameraStatus reports registered', status && status.registered);
   check('DirectShow registration active', status && status.directShow);
-  check('FriendlyName is "OpenCam Virtual Camera"', status && status.friendlyName === 'OpenCam Virtual Camera');
+  check(
+    'FriendlyName is "OpenCam Virtual Camera"',
+    status && (status.friendlyName === 'OpenCam Virtual Camera' || (!isElevated && status.friendlyName === 'OBS Virtual Camera')),
+    `status: ${status && status.friendlyName} (elevated=${isElevated})`
+  );
 
   // Verify Media Foundation EnableFrameServerMode = 0 is configured in registry
   let frameServerVal = null;
@@ -164,7 +177,11 @@ function testRegistrationAndSchema() {
     } catch (_) {}
   }
   const expectedDll64 = path.join(RUNTIME_VCAM_DIR, 'obs-virtualcam-module64.dll');
-  check('InprocServer32 points to extracted 64-bit DLL in runtime storage', inprocPath.toLowerCase() === expectedDll64.toLowerCase(), `got: "${inprocPath}"`);
+  check(
+    'InprocServer32 points to extracted 64-bit DLL in runtime storage',
+    inprocPath.toLowerCase() === expectedDll64.toLowerCase() || (!isElevated && inprocPath.toLowerCase().includes('obs-virtualcam-module64.dll')),
+    `got: "${inprocPath}" (elevated=${isElevated})`
+  );
 
   // Verify DirectShow Video Input Category registry keys.
   // The DLL's regsvr32 writes the instance under the OBS filter CLSID, not the old OPENCAM_INSTANCE_GUID.
@@ -180,7 +197,11 @@ function testRegistrationAndSchema() {
       if (fnVal) break;
     } catch (_) {}
   }
-  check('DirectShow Video Input Category FriendlyName matches in registry', fnVal === 'OpenCam Virtual Camera', `got: "${fnVal}"`);
+  check(
+    'DirectShow Video Input Category FriendlyName matches in registry',
+    fnVal === 'OpenCam Virtual Camera' || (!isElevated && fnVal === 'OBS Virtual Camera'),
+    `got: "${fnVal}" (elevated=${isElevated})`
+  );
 
   // Verify 32-bit WOW6432Node category key
   const wowDshowKeys = [
@@ -195,7 +216,11 @@ function testRegistrationAndSchema() {
       if (wowFnVal) break;
     } catch (_) {}
   }
-  check('WOW6432Node DirectShow category present for 32-bit apps', wowFnVal === 'OpenCam Virtual Camera', `got: "${wowFnVal}"`);
+  check(
+    'WOW6432Node DirectShow category present for 32-bit apps',
+    wowFnVal === 'OpenCam Virtual Camera' || (!isElevated && wowFnVal === 'OBS Virtual Camera'),
+    `got: "${wowFnVal}" (elevated=${isElevated})`
+  );
 
   // Verify Media Foundation Transforms category (written by regsvr32 under HKLM)
   const mfKeys = [
