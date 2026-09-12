@@ -336,26 +336,32 @@ class Inspector {
   execSync(`"${cscPath}" /nologo /out:"${inspExe}" "${inspScript}"`, { cwd: VCAM_DIR });
 
   function inspectMemory(name = 'OBSVirtualCamVideo') {
-    try {
-      const out = execSync(`"${inspExe}" "${name}"`, { cwd: VCAM_DIR, encoding: 'utf8' }).trim();
-      if (out.startsWith('ERR:')) return null;
-      const parts = out.split('|').map((v) => Number(v));
-      return {
-        writeIdx: parts[0],
-        readIdx: parts[1],
-        state: parts[2],
-        offset0: parts[3],
-        offset1: parts[4],
-        offset2: parts[5],
-        type: parts[6],
-        cx: parts[7],
-        cy: parts[8],
-        pad: parts[9],
-        interval: parts[10],
-      };
-    } catch (_) {
-      return null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const out = execSync(`"${inspExe}" "${name}"`, { cwd: VCAM_DIR, encoding: 'utf8' }).trim();
+        if (!out.startsWith('ERR:')) {
+          const parts = out.split('|').map((v) => Number(v));
+          return {
+            writeIdx: parts[0],
+            readIdx: parts[1],
+            state: parts[2],
+            offset0: parts[3],
+            offset1: parts[4],
+            offset2: parts[5],
+            type: parts[6],
+            cx: parts[7],
+            cy: parts[8],
+            pad: parts[9],
+            interval: parts[10],
+          };
+        }
+      } catch (_) {}
+      if (attempt < 4) {
+        const end = Date.now() + 50;
+        while (Date.now() < end) {}
+      }
     }
+    return null;
   }
 
   function sampleFrameLoopChanges(name = 'OBSVirtualCamVideo') {
@@ -413,25 +419,27 @@ class Inspector {
   const memFallback = inspectMemory();
   check('Shared memory state remains running (state>=1) across disconnection', memFallback && memFallback.state >= 1);
 
-  // Dynamic Resolution Switch: Switch from 720p -> 1080p -> 480p -> 720p
-  console.log('\n--- 7. Multi-Resolution Dynamic Switching ---');
+  // Multi-Resolution Ingestion: Verify shared memory stays locked to configured resolution
+  // (1280x720) so DirectShow / Discord pins are never mutated in-flight, while incoming frames
+  // of any resolution (1080p, 480p, 720p) are safely ingested and scaled by the feeder.
+  console.log('\n--- 7. Multi-Resolution Ingestion & Locked Output Stride ---');
   const jpegFrame1080 = makeTestJpeg(1920, 1080, 10, 120, 240);
   feeder.pushFrame(jpegFrame1080, 4000000);
   await new Promise((r) => setTimeout(r, 150));
   const mem1080 = inspectMemory();
-  check('Resolution updated dynamically to 1920x1080', mem1080 && mem1080.cx === 1920 && mem1080.cy === 1080, `got ${mem1080 && mem1080.cx}x${mem1080 && mem1080.cy}`);
+  check('Resolution remains locked to configured 1280x720 on 1080p frame (prevents DirectShow stride corruption)', mem1080 && mem1080.cx === 1280 && mem1080.cy === 720, `got ${mem1080 && mem1080.cx}x${mem1080 && mem1080.cy}`);
 
   const jpegFrame480 = makeTestJpeg(640, 480, 200, 50, 100);
   feeder.pushFrame(jpegFrame480, 4500000);
   await new Promise((r) => setTimeout(r, 150));
   const mem480 = inspectMemory();
-  check('Resolution updated dynamically to 640x480', mem480 && mem480.cx === 640 && mem480.cy === 480, `got ${mem480 && mem480.cx}x${mem480 && mem480.cy}`);
+  check('Resolution remains locked to configured 1280x720 on 480p frame', mem480 && mem480.cx === 1280 && mem480.cy === 720, `got ${mem480 && mem480.cx}x${mem480 && mem480.cy}`);
 
-  // Switch back to 720p
+  // Ingest 720p
   feeder.pushFrame(jpegFrame720, 5000000);
   await new Promise((r) => setTimeout(r, 150));
   const mem720b = inspectMemory();
-  check('Resolution switched back dynamically to 1280x720', mem720b && mem720b.cx === 1280 && mem720b.cy === 720, `got ${mem720b && mem720b.cx}x${mem720b && mem720b.cy}`);
+  check('Resolution remains stable at 1280x720 on 720p frame', mem720b && mem720b.cx === 1280 && mem720b.cy === 720, `got ${mem720b && mem720b.cx}x${mem720b && mem720b.cy}`);
 
   // Odd and extreme resolution handling test
   console.log('\n--- 8. Odd & Extreme Resolution Handling ---');
@@ -439,7 +447,7 @@ class Inspector {
   feeder.pushFrame(jpegOdd, 5500000);
   await new Promise((r) => setTimeout(r, 150));
   const memOdd = inspectMemory();
-  check('Odd resolution sanitized to even dimensions (852x478)', memOdd && memOdd.cx === 852 && memOdd.cy === 478, `got ${memOdd && memOdd.cx}x${memOdd && memOdd.cy}`);
+  check('Resolution remains locked to 1280x720 on odd resolution frame (853x479)', memOdd && memOdd.cx === 1280 && memOdd.cy === 720, `got ${memOdd && memOdd.cx}x${memOdd && memOdd.cy}`);
   check('Feeder state remains active after odd resolution frame', memOdd && memOdd.state >= 1);
 
   // Push extreme resolution frame (e.g. 4K clamped to 3840x2160)
@@ -447,7 +455,7 @@ class Inspector {
   feeder.pushFrame(jpeg4K, 5800000);
   await new Promise((r) => setTimeout(r, 200));
   const mem4K = inspectMemory();
-  check('4K resolution handled cleanly (3840x2160)', mem4K && mem4K.cx === 3840 && mem4K.cy === 2160, `got ${mem4K && mem4K.cx}x${mem4K && mem4K.cy}`);
+  check('Resolution remains locked to 1280x720 on 4K frame (3840x2160)', mem4K && mem4K.cx === 1280 && mem4K.cy === 720, `got ${mem4K && mem4K.cx}x${mem4K && mem4K.cy}`);
 
   // Corrupted frame and framing desync recovery test
   console.log('\n--- 9. Corrupted Payload & Desync Resilience ---');
@@ -666,6 +674,14 @@ async function testUnregistrationAndCleanup() {
   check('re-registered for permanent availability', reReg && (reReg.success || reReg.status));
   const finalStatus = getVirtualCameraStatus();
   check('System restored to registered state for end-user', finalStatus && finalStatus.registered);
+
+  // Restore %APPDATA%\obs-virtualcam.txt to standard 1920x1080 so DirectShow consumers always open in 1080p
+  try {
+    const appData = process.env.APPDATA;
+    if (appData) {
+      fs.writeFileSync(path.join(appData, 'obs-virtualcam.txt'), '1920x1080x333333', 'utf8');
+    }
+  } catch (_) {}
 }
 
 (async () => {

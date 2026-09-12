@@ -148,6 +148,7 @@ namespace OpenCam.VirtualCamera
         private static int _frameSize = 0;
         private static int _totalBufferSize = 0;
         private static uint _writeIndex = 0;
+        private static long _frameSequence = 0;
         private static int _currentFps = 30;
         private static byte[] _nv12Buffer = null;
 
@@ -212,6 +213,18 @@ namespace OpenCam.VirtualCamera
             _totalBufferSize = Math.Max(alignedHeader + (3 * slotStride), MAX_TOTAL_SIZE);
             ulong interval = (fps >= 60) ? 166666UL : ((fps > 0) ? (10000000UL / (ulong)fps) : 333333UL);
 
+            // Synchronize %APPDATA%\obs-virtualcam.txt so DirectShow filters opening the device always agree on resolution and frame interval
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                if (!string.IsNullOrEmpty(appData))
+                {
+                    string cfgPath = Path.Combine(appData, "obs-virtualcam.txt");
+                    File.WriteAllText(cfgPath, string.Format("{0}x{1}x{2}", width, height, interval));
+                }
+            }
+            catch { }
+
             // If mappings already exist and are valid, update the QueueHeaders directly without re-creating handles
             if (_mappedBuffers.Count > 0)
             {
@@ -221,8 +234,8 @@ namespace OpenCam.VirtualCamera
                     {
                         QueueHeader header = new QueueHeader
                         {
-                            write_idx = 0,
-                            read_idx = 0,
+                            write_idx = (uint)_frameSequence,
+                            read_idx = (uint)_frameSequence,
                             state = STATE_STARTING,
                             offset0 = (uint)alignedHeader,
                             offset1 = (uint)(alignedHeader + slotStride),
@@ -277,8 +290,8 @@ namespace OpenCam.VirtualCamera
                     // Initialize QueueHeader (STARTING; becomes READY on first frame write)
                     QueueHeader header = new QueueHeader
                     {
-                        write_idx = 0,
-                        read_idx = 0,
+                        write_idx = (uint)_frameSequence,
+                        read_idx = (uint)_frameSequence,
                         state = STATE_STARTING,
                         offset0 = (uint)alignedHeader,
                         offset1 = (uint)(alignedHeader + slotStride),
@@ -310,26 +323,31 @@ namespace OpenCam.VirtualCamera
             int slotStride = (_frameSize + FRAME_HEADER_SIZE + 31) & ~31;
             int copyLen = Math.Min(pixelData.Length, _frameSize);
 
+            long seq = Interlocked.Increment(ref _frameSequence);
+            long ts100ns = (long)((ulong)_systemStopwatch.ElapsedMilliseconds * 10000UL);
             foreach (var mb in _mappedBuffers)
             {
                 if (mb.View == IntPtr.Zero) continue;
                 for (int b = 0; b < 3; b++)
                 {
                     IntPtr slot = new IntPtr(mb.View.ToInt64() + alignedHeader + (b * slotStride));
-                    Marshal.WriteInt64(slot, 0, 0); // timestamp
+                    Marshal.WriteInt64(slot, 0, ts100ns); // timestamp in 100ns units
                     Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
                 }
-                Marshal.WriteInt32(mb.View, 0, 0);          // write_idx = 0
+                Thread.MemoryBarrier();
+                Marshal.WriteInt32(mb.View, 0, (int)seq);          // write_idx = seq
+                Marshal.WriteInt32(mb.View, 4, (int)seq);          // read_idx = seq
                 Marshal.WriteInt32(mb.View, 8, (int)STATE_READY);
             }
-            _writeIndex = 0;
+            _writeIndex = (uint)(seq % 3);
         }
 
         private static void WriteFrameToSharedMemoryInternal(byte[] pixelData, ulong timestamp)
         {
             if (_mappedBuffers.Count == 0 || pixelData == null || pixelData.Length == 0) return;
 
-            uint nextIndex = (_writeIndex + 1) % 3;
+            long seq = Interlocked.Increment(ref _frameSequence);
+            uint nextIndex = (uint)(seq % 3);
             int alignedHeader = (HEADER_SIZE + 31) & ~31;
             int slotStride = (_frameSize + FRAME_HEADER_SIZE + 31) & ~31;
             int targetOffset = alignedHeader + (int)(nextIndex * slotStride);
@@ -342,11 +360,12 @@ namespace OpenCam.VirtualCamera
                 Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
                 Marshal.WriteInt64(slot, 0, (long)timestamp); // per-slot timestamp header
 
-                // Publish slot: memory barrier ensures pixel data is visible before the new write_idx,
-                // then mark READY (obs DLL only delivers frames in state == SHARED_QUEUE_STATE_READY)
+                // Publish slot: memory barrier ensures pixel data is visible before sequence counters,
+                // then write write_idx (offset 0), read_idx (offset 4), and mark READY (offset 8)
                 Thread.MemoryBarrier();
-                Marshal.WriteInt32(mb.View, 0, (int)nextIndex); // write_idx at offset 0
-                Marshal.WriteInt32(mb.View, 8, (int)STATE_READY); // state at offset 8
+                Marshal.WriteInt32(mb.View, 0, (int)seq);          // write_idx at offset 0
+                Marshal.WriteInt32(mb.View, 4, (int)seq);          // read_idx at offset 4
+                Marshal.WriteInt32(mb.View, 8, (int)STATE_READY);  // state at offset 8
             }
 
             _writeIndex = nextIndex;
@@ -373,7 +392,8 @@ namespace OpenCam.VirtualCamera
                 using (Graphics g = Graphics.FromImage(scaled))
                 {
                     g.InterpolationMode = InterpolationMode.Bilinear;
-                    g.DrawImage(bmp, 0, 0, w, h);
+                    g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    g.DrawImage(bmp, new Rectangle(0, 0, w, h), 0, 0, bmp.Width, bmp.Height, GraphicsUnit.Pixel);
                 }
                 disposeScaled = true;
             }
@@ -511,6 +531,17 @@ namespace OpenCam.VirtualCamera
                         Marshal.WriteInt64(mb.View, 40, (long)newInterval);
                     }
                 }
+
+                try
+                {
+                    string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                    if (!string.IsNullOrEmpty(appData))
+                    {
+                        string cfgPath = Path.Combine(appData, "obs-virtualcam.txt");
+                        File.WriteAllText(cfgPath, string.Format("{0}x{1}x{2}", _currentWidth, _currentHeight, newInterval));
+                    }
+                }
+                catch { }
             }
         }
 
@@ -592,6 +623,7 @@ namespace OpenCam.VirtualCamera
                 long lastArrivalMs = 0;
                 long lastPtsUs = 0;
                 int fastFrameStreak = 0;
+                int slowFrameStreak = 0;
 
                 while (_isRunning)
                 {
@@ -642,9 +674,6 @@ namespace OpenCam.VirtualCamera
                             using (MemoryStream ms = new MemoryStream(payloadBuffer, 0, payloadLength, false, false))
                             using (Bitmap bmp = (Bitmap)Image.FromStream(ms))
                             {
-                                int sw = Math.Max(320, Math.Min(MAX_WIDTH, bmp.Width & ~1));
-                                int sh = Math.Max(240, Math.Min(MAX_HEIGHT, bmp.Height & ~1));
-
                                 long nowArrivalMs = _systemStopwatch.ElapsedMilliseconds;
                                 ulong currentPtsUs = pts100ns / 10UL;
 
@@ -654,6 +683,7 @@ namespace OpenCam.VirtualCamera
                                 if ((arrivalDeltaMs > 0 && arrivalDeltaMs <= 20) || (ptsDeltaMs > 0 && ptsDeltaMs <= 20))
                                 {
                                     fastFrameStreak++;
+                                    slowFrameStreak = 0;
                                     if (fastFrameStreak >= 2 && _currentFps != 60)
                                     {
                                         AdaptFps(60);
@@ -662,6 +692,11 @@ namespace OpenCam.VirtualCamera
                                 else if (arrivalDeltaMs > 28 && ptsDeltaMs > 28)
                                 {
                                     fastFrameStreak = 0;
+                                    slowFrameStreak++;
+                                    if (slowFrameStreak >= 10 && _currentFps != 30)
+                                    {
+                                        AdaptFps(30);
+                                    }
                                 }
 
                                 lastArrivalMs = nowArrivalMs;
@@ -672,11 +707,6 @@ namespace OpenCam.VirtualCamera
 
                                 lock (_syncLock)
                                 {
-                                    if (sw != _currentWidth || sh != _currentHeight)
-                                    {
-                                        InitSharedMemory(sw, sh, _currentFormat, _currentFps);
-                                        _standbyBuffer = GenerateStandbyCard(sw, sh, "Waiting for phone connection");
-                                    }
                                     ConvertBmpToNv12InPlace(bmp, _currentWidth, _currentHeight, _nv12Buffer);
                                     WriteFrameToSharedMemoryInternal(_nv12Buffer, pts100ns);
                                 }

@@ -93,9 +93,9 @@ function connectVideo(ip, port, codec, width, height, fps) {
   const targetFps = Number(fps) || currentStreamFps || 30;
   currentStreamFps = targetFps;
 
-  const w = width || 1920;
-  const h = height || 1080;
-  try { vcamFeeder.start({ width: w, height: h, fps: targetFps }); } catch (_) {}
+  const feederW = vcamFeeder.currentWidth || 1920;
+  const feederH = vcamFeeder.currentHeight || 1080;
+  try { vcamFeeder.start({ width: feederW, height: feederH, fps: targetFps }); } catch (_) {}
 
   const sock = new net.Socket();
   videoSocket = sock;
@@ -206,7 +206,7 @@ function scheduleReconnect(ip, port, codec, width, height, fps) {
       'failed',
       `Could not connect to ${ip}:${port}. Check: (1) the OpenCam app is open and streaming, ` +
         '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct. If the phone app is ' +
-        'outdated, update it to v1.6.9 or newer. Press Connect to try again.'
+        'outdated, update it to v1.6.10 or newer. Press Connect to try again.'
     );
   }
 }

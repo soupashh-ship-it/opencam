@@ -198,7 +198,7 @@ function startFrameWatchdog() {
     if (!hasRenderedFrame && isConnected) {
       watchdogShown = true;
       hudStatusText.textContent =
-        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.9+)';
+        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.10+)';
       showToast('No video frames received — update the phone app to the latest version', 5000);
     }
   }, 6000);
