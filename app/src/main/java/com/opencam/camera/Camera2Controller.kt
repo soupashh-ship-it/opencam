@@ -119,29 +119,31 @@ class Camera2Controller(context: Context) {
         }
     }
 
-    val isFrontFacing: Boolean
-        get() {
-            val id = currentCameraId
-            if (id == null) return frontFacingCache
-            return try {
-                val facing = manager.getCameraCharacteristics(id)
-                    .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-                frontFacingCache = facing
-                facing
-            } catch (_: Exception) {
-                frontFacingCache
-            }
+    fun isFrontFacing(cameraId: String? = currentCameraId): Boolean {
+        val id = cameraId ?: currentCameraId
+        if (id == null) return frontFacingCache
+        return try {
+            val facing = manager.getCameraCharacteristics(id)
+                .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+            frontFacingCache = facing
+            facing
+        } catch (_: Exception) {
+            frontFacingCache
         }
+    }
+
+    val isFrontFacing: Boolean
+        get() = isFrontFacing(currentCameraId)
 
     /** Stream rotation incorporating physical accelerometer device orientation. */
     fun streamRotationDegrees(deviceOrientationDeg: Int = 0, cameraId: String? = currentCameraId): Int {
         val sensor = sensorOrientation(cameraId)
-        val isFront = isFrontFacing
-        return if (isFront) {
-            CameraRotation.normalize(sensor + deviceOrientationDeg)
-        } else {
-            CameraRotation.normalize(sensor - deviceOrientationDeg)
-        }
+        val isFront = isFrontFacing(cameraId)
+        return CameraRotation.calculateStreamRotation(
+            sensorOrientation = sensor,
+            deviceOrientationDeg = deviceOrientationDeg,
+            isFrontFacing = isFront,
+        )
     }
 
     @SuppressLint("MissingPermission")

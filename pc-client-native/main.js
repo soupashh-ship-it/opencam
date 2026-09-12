@@ -206,7 +206,7 @@ function scheduleReconnect(ip, port, codec, width, height, fps) {
       'failed',
       `Could not connect to ${ip}:${port}. Check: (1) the OpenCam app is open and streaming, ` +
         '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct. If the phone app is ' +
-        'outdated, update it to v1.6.10 or newer. Press Connect to try again.'
+        'outdated, update it to v1.7.0 or newer. Press Connect to try again.'
     );
   }
 }

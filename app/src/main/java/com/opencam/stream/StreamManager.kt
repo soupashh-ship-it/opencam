@@ -27,6 +27,7 @@ import com.opencam.server.ServerCallbacks
 import com.opencam.server.StreamServer
 import com.opencam.server.VideoClient
 import com.opencam.util.BatteryUtils
+import com.opencam.util.CameraRotation
 import com.opencam.util.NetworkUtils
 import com.opencam.util.Nv21Rotation
 import java.io.ByteArrayOutputStream
@@ -118,12 +119,7 @@ class StreamManager(context: Context) {
     private val orientationEventListener = object : OrientationEventListener(appContext) {
         override fun onOrientationChanged(orientation: Int) {
             if (orientation == ORIENTATION_UNKNOWN) return
-            val newDeg = when (orientation) {
-                in 45..134 -> 90
-                in 135..224 -> 180
-                in 225..314 -> 270
-                else -> 0
-            }
+            val newDeg = CameraRotation.roundOrientation(orientation)
             if (newDeg != deviceOrientationDegrees) {
                 managerHandler.post {
                     if (newDeg != deviceOrientationDegrees) {
@@ -738,13 +734,16 @@ class StreamManager(context: Context) {
             failRebuild(generation, "Camera session configuration failed")
             return
         }
+        val swap = (codec == Codec.MJPEG) && (rotation == 90 || rotation == 270)
+        val sWidth = if (swap) sourceSize.height else sourceSize.width
+        val sHeight = if (swap) sourceSize.width else sourceSize.height
         _state.update {
             it.copy(
                 codec = codec,
                 width = sourceSize.width,
                 height = sourceSize.height,
-                streamWidth = sourceSize.width,
-                streamHeight = sourceSize.height,
+                streamWidth = sWidth,
+                streamHeight = sHeight,
                 actualFps = fps,
                 sensorOrientation = camera.sensorOrientation(),
                 frontFacing = camera.isFrontFacing,
