@@ -26,6 +26,7 @@ let lastConnectError = null;
 let connectionGeneration = 0;
 let reconnectTimer = null;
 let lastErrorTime = 0;
+let currentStreamFps = 30;
 
 // How many failed attempts before we give up and ask the user to act.
 const MAX_CONNECT_ATTEMPTS = 9;
@@ -82,16 +83,19 @@ function disconnectStream() {
   }
 }
 
-function connectVideo(ip, port, codec, width, height) {
+function connectVideo(ip, port, codec, width, height, fps) {
   disconnectStream();
   stopRequested = false;
   isConnected = true;
   lastConnectError = null;
   const generation = connectionGeneration;
 
+  const targetFps = Number(fps) || currentStreamFps || 30;
+  currentStreamFps = targetFps;
+
   const w = width || 1920;
   const h = height || 1080;
-  try { vcamFeeder.start({ width: w, height: h, fps: 30 }); } catch (_) {}
+  try { vcamFeeder.start({ width: w, height: h, fps: targetFps }); } catch (_) {}
 
   const sock = new net.Socket();
   videoSocket = sock;
@@ -157,14 +161,15 @@ function connectVideo(ip, port, codec, width, height) {
       if (!stopRequested) sendStatus('disconnected', 'Disconnected');
       return;
     }
-    scheduleReconnect(ip, port, codec, width, height);
+    scheduleReconnect(ip, port, codec, width, height, targetFps);
   });
 }
 
-function scheduleReconnect(ip, port, codec, width, height) {
+function scheduleReconnect(ip, port, codec, width, height, fps) {
   const generation = connectionGeneration;
   invalidateReconnectTimer();
   connectAttempts++;
+  const targetFps = Number(fps) || currentStreamFps || 30;
 
   // Once video has flowed, a drop is just a blip — reconnect quickly.
   if (framesEverReceived && ++consecutiveReconnects <= 30) {
@@ -173,7 +178,7 @@ function scheduleReconnect(ip, port, codec, width, height) {
     }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height);
+      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height, targetFps);
     }, 1000);
     return;
   }
@@ -185,7 +190,7 @@ function scheduleReconnect(ip, port, codec, width, height) {
     }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height);
+      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height, targetFps);
     }, 1500);
   } else if (connectAttempts < MAX_CONNECT_ATTEMPTS) {
     if (Date.now() - lastErrorTime >= 2000) {
@@ -193,7 +198,7 @@ function scheduleReconnect(ip, port, codec, width, height) {
     }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height);
+      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height, targetFps);
     }, 3000);
   } else {
     isConnected = false;
@@ -201,7 +206,7 @@ function scheduleReconnect(ip, port, codec, width, height) {
       'failed',
       `Could not connect to ${ip}:${port}. Check: (1) the OpenCam app is open and streaming, ` +
         '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct. If the phone app is ' +
-        'outdated, update it to v1.6.8 or newer. Press Connect to try again.'
+        'outdated, update it to v1.6.9 or newer. Press Connect to try again.'
     );
   }
 }
@@ -256,12 +261,14 @@ function pushSettings(ip, port, params) {
 // ---------------------------------------------------------------------------
 //  IPC Event Handlers
 // ---------------------------------------------------------------------------
-ipcMain.handle('connect-stream', async (_event, { ip, port, codec, width, height }) => {
+ipcMain.handle('connect-stream', async (_event, { ip, port, codec, width, height, fps }) => {
   connectAttempts = 0;
   consecutiveReconnects = 0;
   framesEverReceived = false;
   lastConnectError = null;
-  connectVideo(ip, port, codec, width, height);
+  const targetFps = Number(fps) || 30;
+  currentStreamFps = targetFps;
+  connectVideo(ip, port, codec, width, height, targetFps);
   return true;
 });
 
@@ -276,6 +283,17 @@ ipcMain.handle('get-status', async (_event, { ip, port }) => {
 });
 
 ipcMain.handle('push-settings', async (_event, { ip, port, params }) => {
+  if (params && params.fps) {
+    const newFps = parseInt(params.fps, 10);
+    if (newFps > 0 && newFps !== currentStreamFps) {
+      currentStreamFps = newFps;
+      if (isConnected) {
+        try {
+          vcamFeeder.start({ width: vcamFeeder.currentWidth, height: vcamFeeder.currentHeight, fps: newFps });
+        } catch (_) {}
+      }
+    }
+  }
   return await pushSettings(ip, port, params);
 });
 

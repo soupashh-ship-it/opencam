@@ -768,10 +768,30 @@ class Camera2Controller(context: Context) {
     private fun chooseFpsRange(info: CameraCharacteristics, requested: Int): Range<Int> {
         val ranges = info.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?: return Range(30, 30)
-        val target = requested.coerceIn(1, 120)
-        ranges.firstOrNull { it.lower == target && it.upper == target }?.let { return it }
-        return ranges.minByOrNull { range ->
-            abs(range.upper - target) * 10 + abs(range.lower - target)
-        } ?: Range(30, 30)
+        val pairs = ranges.map { it.lower to it.upper }
+        val selected = selectFpsRange(pairs, requested)
+        return ranges.firstOrNull { it.lower == selected.first && it.upper == selected.second }
+            ?: Range(selected.first, selected.second)
+    }
+
+    companion object {
+        fun selectFpsRange(ranges: List<Pair<Int, Int>>, requested: Int): Pair<Int, Int> {
+            if (ranges.isEmpty()) return 30 to 30
+            val target = requested.coerceIn(1, 120)
+
+            // When 60 FPS is requested, prioritize [60, 60]. If absent, pick [30, 60].
+            if (target == 60) {
+                ranges.firstOrNull { it.first == 60 && it.second == 60 }?.let { return it }
+                ranges.firstOrNull { it.first == 30 && it.second == 60 }?.let { return it }
+                ranges.filter { it.second == 60 }.maxByOrNull { it.first }?.let { return it }
+            }
+
+            // Exact match (e.g. [30, 30])
+            ranges.firstOrNull { it.first == target && it.second == target }?.let { return it }
+
+            return ranges.minByOrNull { range ->
+                abs(range.second - target) * 10 + abs(range.first - target)
+            } ?: (30 to 30)
+        }
     }
 }

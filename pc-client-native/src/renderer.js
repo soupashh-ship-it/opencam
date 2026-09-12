@@ -16,6 +16,8 @@ let lastFrameH = 0;
 let previewCodecGuard = false;
 let statusPollInFlight = false;
 let lastPhoneStatus = null;
+let userSelectedFps = false;
+let isFpsSliderInteracting = false;
 
 // DOM Elements
 const canvas = document.getElementById('video-canvas');
@@ -196,7 +198,7 @@ function startFrameWatchdog() {
     if (!hasRenderedFrame && isConnected) {
       watchdogShown = true;
       hudStatusText.textContent =
-        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.8+)';
+        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.9+)';
       showToast('No video frames received — update the phone app to the latest version', 5000);
     }
   }, 6000);
@@ -296,7 +298,8 @@ function syncStatusToUi(status) {
   }
   if (status.fps) {
     const fps = Number(status.fps);
-    if (Number.isFinite(fps)) {
+    const isInteracting = isFpsSliderInteracting || document.activeElement === sliderFps;
+    if (Number.isFinite(fps) && !userSelectedFps && !isInteracting) {
       sliderFps.value = String(Math.max(15, Math.min(60, fps)));
       fpsVal.textContent = sliderFps.value;
     }
@@ -395,7 +398,9 @@ btnConnect.addEventListener('click', () => {
     hasRenderedFrame = false;
     setUiState('connecting', `Connecting to ${ip}:${port}…`);
     startFrameWatchdog();
-    window.api.connectStream({ ip, port, codec, width: w, height: h });
+    const fps = userSelectedFps ? (parseInt(sliderFps.value, 10) || 30) : undefined;
+    window.api.connectStream({ ip, port, codec, width: w, height: h, fps });
+    pushCurrentSettings();
   }
 });
 
@@ -411,11 +416,13 @@ async function pushCurrentSettings() {
     codec: effectiveCodec(), // always 'jpg'
     width: w,
     height: h,
-    fps: sliderFps.value,
     bitrate: sliderBitrate.value,
     zoom: sliderZoom.value,
     torch: isTorchOn ? '1' : '0',
   };
+  if (userSelectedFps) {
+    params.fps = sliderFps.value;
+  }
   if (pendingLensSwitch) {
     params.lens = pendingLensSwitch;
     pendingLensSwitch = null;
@@ -433,10 +440,20 @@ selectRes.addEventListener('change', () => {
   if (isConnected) pushCurrentSettings();
 });
 
+sliderFps.addEventListener('pointerdown', () => { isFpsSliderInteracting = true; });
+sliderFps.addEventListener('pointerup', () => { isFpsSliderInteracting = false; });
+window.addEventListener('pointerup', () => { isFpsSliderInteracting = false; });
+sliderFps.addEventListener('focus', () => { isFpsSliderInteracting = true; });
+sliderFps.addEventListener('blur', () => { isFpsSliderInteracting = false; });
 sliderFps.addEventListener('input', () => {
+  userSelectedFps = true;
   fpsVal.textContent = sliderFps.value;
 });
-sliderFps.addEventListener('change', pushCurrentSettings);
+sliderFps.addEventListener('change', () => {
+  userSelectedFps = true;
+  localStorage.setItem('opencam_fps', sliderFps.value);
+  pushCurrentSettings();
+});
 
 sliderBitrate.addEventListener('input', () => {
   bitrateVal.textContent = `${sliderBitrate.value} Mbps`;
@@ -511,11 +528,17 @@ function loadSavedPreferences() {
   const savedPort = localStorage.getItem('opencam_port');
   const savedCodec = localStorage.getItem('opencam_codec');
   const savedRes = localStorage.getItem('opencam_res');
+  const savedFps = localStorage.getItem('opencam_fps');
 
   if (savedIp) ipInput.value = savedIp;
   if (savedPort) portInput.value = savedPort;
   if (savedCodec === 'jpg') selectCodec.value = 'jpg';
   if (savedRes) selectRes.value = savedRes;
+  if (savedFps) {
+    sliderFps.value = savedFps;
+    fpsVal.textContent = savedFps;
+    userSelectedFps = true;
+  }
   effectiveCodec(); // sanitize any saved H.26x selection
 }
 if (!localStorage.getItem('opencam_ip')) ipInput.value = '';

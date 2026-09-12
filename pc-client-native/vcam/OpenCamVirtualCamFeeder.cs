@@ -210,7 +210,7 @@ namespace OpenCam.VirtualCamera
             int alignedHeader = (HEADER_SIZE + 31) & ~31;
             int slotStride = (_frameSize + FRAME_HEADER_SIZE + 31) & ~31;
             _totalBufferSize = Math.Max(alignedHeader + (3 * slotStride), MAX_TOTAL_SIZE);
-            ulong interval = (fps > 0) ? (10000000UL / (ulong)fps) : 333333UL;
+            ulong interval = (fps >= 60) ? 166666UL : ((fps > 0) ? (10000000UL / (ulong)fps) : 333333UL);
 
             // If mappings already exist and are valid, update the QueueHeaders directly without re-creating handles
             if (_mappedBuffers.Count > 0)
@@ -356,7 +356,7 @@ namespace OpenCam.VirtualCamera
         {
             lock (_syncLock)
             {
-                WriteFrameToSharedMemoryInternal(pixelData, (ulong)_systemStopwatch.ElapsedMilliseconds);
+                WriteFrameToSharedMemoryInternal(pixelData, (ulong)_systemStopwatch.ElapsedMilliseconds * 10000UL);
             }
         }
 
@@ -494,17 +494,37 @@ namespace OpenCam.VirtualCamera
             return path;
         }
 
+        public static void AdaptFps(int newFps)
+        {
+            if (newFps <= 0) return;
+            newFps = Math.Min(120, newFps);
+            ulong newInterval = (newFps >= 60) ? 166666UL : (10000000UL / (ulong)newFps);
+
+            lock (_syncLock)
+            {
+                _currentFps = newFps;
+                foreach (var mb in _mappedBuffers)
+                {
+                    if (mb.View != IntPtr.Zero)
+                    {
+                        // Update interval at offset 40 (0x28)
+                        Marshal.WriteInt64(mb.View, 40, (long)newInterval);
+                    }
+                }
+            }
+        }
+
         private static void StandbyLoop(int fps)
         {
-            int intervalMs = (fps > 0) ? (1000 / fps) : 33;
-            if (intervalMs < 1) intervalMs = 33;
-
             long nextFrameMs = _systemStopwatch.ElapsedMilliseconds;
 
             while (_isRunning)
             {
                 try
                 {
+                    int currentFps = _currentFps > 0 ? _currentFps : fps;
+                    int intervalMs = (currentFps > 0) ? (1000 / currentFps) : 33;
+                    if (intervalMs < 1) intervalMs = 16;
                     long nowMs = _systemStopwatch.ElapsedMilliseconds;
                     long lastLiveMs = Interlocked.Read(ref _lastLiveFrameTimeTicks);
                     bool liveActive = (lastLiveMs > 0 && (nowMs - lastLiveMs) < 600);
@@ -516,7 +536,7 @@ namespace OpenCam.VirtualCamera
                         {
                             if (_standbyBuffer != null && _mappedBuffers.Count > 0)
                             {
-                                WriteFrameToSharedMemoryInternal(_standbyBuffer, (ulong)_systemStopwatch.ElapsedMilliseconds);
+                                WriteFrameToSharedMemoryInternal(_standbyBuffer, (ulong)_systemStopwatch.ElapsedMilliseconds * 10000UL);
                             }
                         }
                     }
@@ -557,7 +577,7 @@ namespace OpenCam.VirtualCamera
                 _standbyBuffer = GenerateStandbyCard(initialWidth, initialHeight, "Waiting for phone connection");
                 WriteStandbyToAllBuffers(_standbyBuffer);
 
-                // Start standby feeder thread (always-on 30 FPS standby loop)
+                // Start standby feeder thread (always-on standby loop)
                 _standbyThread = new Thread(() => StandbyLoop(fps))
                 {
                     IsBackground = true,
@@ -569,6 +589,9 @@ namespace OpenCam.VirtualCamera
                 byte[] headerBuf = new byte[12];
                 int headerRead = 0;
                 byte[] payloadBuffer = new byte[1024 * 1024]; // Reusable 1MB initial frame buffer
+                long lastArrivalMs = 0;
+                long lastPtsUs = 0;
+                int fastFrameStreak = 0;
 
                 while (_isRunning)
                 {
@@ -622,14 +645,36 @@ namespace OpenCam.VirtualCamera
                                 int sw = Math.Max(320, Math.Min(MAX_WIDTH, bmp.Width & ~1));
                                 int sh = Math.Max(240, Math.Min(MAX_HEIGHT, bmp.Height & ~1));
 
-                                Interlocked.Exchange(ref _lastLiveFrameTimeTicks, _systemStopwatch.ElapsedMilliseconds);
+                                long nowArrivalMs = _systemStopwatch.ElapsedMilliseconds;
+                                ulong currentPtsUs = pts100ns / 10UL;
+
+                                long arrivalDeltaMs = (lastArrivalMs > 0) ? (nowArrivalMs - lastArrivalMs) : 1000;
+                                long ptsDeltaMs = (lastPtsUs > 0 && currentPtsUs > (ulong)lastPtsUs) ? (long)((currentPtsUs - (ulong)lastPtsUs) / 1000UL) : 1000;
+
+                                if ((arrivalDeltaMs > 0 && arrivalDeltaMs <= 20) || (ptsDeltaMs > 0 && ptsDeltaMs <= 20))
+                                {
+                                    fastFrameStreak++;
+                                    if (fastFrameStreak >= 2 && _currentFps != 60)
+                                    {
+                                        AdaptFps(60);
+                                    }
+                                }
+                                else if (arrivalDeltaMs > 28 && ptsDeltaMs > 28)
+                                {
+                                    fastFrameStreak = 0;
+                                }
+
+                                lastArrivalMs = nowArrivalMs;
+                                lastPtsUs = (long)currentPtsUs;
+
+                                Interlocked.Exchange(ref _lastLiveFrameTimeTicks, nowArrivalMs);
                                 _isLiveStreaming = true;
 
                                 lock (_syncLock)
                                 {
                                     if (sw != _currentWidth || sh != _currentHeight)
                                     {
-                                        InitSharedMemory(sw, sh, _currentFormat, fps);
+                                        InitSharedMemory(sw, sh, _currentFormat, _currentFps);
                                         _standbyBuffer = GenerateStandbyCard(sw, sh, "Waiting for phone connection");
                                     }
                                     ConvertBmpToNv12InPlace(bmp, _currentWidth, _currentHeight, _nv12Buffer);

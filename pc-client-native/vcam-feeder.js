@@ -246,19 +246,16 @@ class VirtualCamFeeder {
 
   stop() {
     if (this.process) {
-      try {
-        if (this.process.stdin && !this.process.stdin.destroyed) {
-          try { this.process.stdin.end(); } catch (_) {}
-        }
-        const proc = this.process;
-        const killTimer = setTimeout(() => {
-          if (proc && !proc.killed) {
-            try { proc.kill(); } catch (_) {}
-          }
-        }, 500);
-        if (killTimer.unref) killTimer.unref();
-      } catch (_) {}
+      const proc = this.process;
       this.process = null;
+      try {
+        if (proc.stdin && !proc.stdin.destroyed) {
+          try { proc.stdin.end(); } catch (_) {}
+        }
+        if (!proc.killed) {
+          try { proc.kill(); } catch (_) {}
+        }
+      } catch (_) {}
     }
   }
 

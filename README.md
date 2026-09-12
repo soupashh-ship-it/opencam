@@ -105,7 +105,7 @@ npm start
 Or build a standalone portable Windows `.exe`:
 ```bash
 npm run build
-# Portable binary: pc-client-native/dist/OpenCam Studio 1.6.8.exe
+# Portable binary: pc-client-native/dist/OpenCam Studio 1.6.9.exe
 ```
 
 - Click **Scan Network** to automatically find your phone on the local subnet.
@@ -223,7 +223,7 @@ All video and audio streams share a standardized 12-byte binary header followed 
 
 ```json
 {
-  "version": "1.6.8",
+  "version": "1.6.9",
   "codec": "jpg",
   "width": 1920,
   "height": 1080,
