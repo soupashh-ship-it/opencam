@@ -121,8 +121,22 @@ function effectiveCodec() {
 // ---------------------------------------------------------------------------
 //  Connection state
 // ---------------------------------------------------------------------------
+let currentUiState = 'disconnected';
+let streamGeneration = 0;
+let incomingFrameSeq = 0;
+let lastRenderedSeq = 0;
+
+function resetStreamSession() {
+  streamGeneration++;
+  incomingFrameSeq = 0;
+  lastRenderedSeq = 0;
+}
+
 function setUiState(state, message) {
   hudStatusText.textContent = message;
+  const prevState = currentUiState;
+  currentUiState = state;
+
   if (state === 'connected') {
     isConnected = true;
     hasRenderedFrame = true;
@@ -130,14 +144,23 @@ function setUiState(state, message) {
     btnConnectText.textContent = 'Disconnect';
     btnConnect.className = 'btn btn-outline';
   } else if (state === 'connecting') {
+    isConnected = true;
+    if (prevState === 'disconnected') {
+      resetStreamSession();
+    }
     connectionDot.className = 'dot connecting';
     btnConnectText.textContent = 'Connecting…';
   } else if (state === 'reconnecting') {
+    isConnected = true;
+    if (prevState === 'connected') {
+      resetStreamSession();
+    }
     connectionDot.className = 'dot connecting';
   } else {
     isConnected = false;
-    incomingFrameSeq = 0;
-    lastRenderedSeq = 0;
+    if (prevState !== 'disconnected') {
+      resetStreamSession();
+    }
     connectionDot.className = 'dot disconnected';
     btnConnectText.textContent = 'Connect Stream';
     btnConnect.className = 'btn btn-primary';
@@ -173,21 +196,20 @@ function startFrameWatchdog() {
     if (!hasRenderedFrame && isConnected) {
       watchdogShown = true;
       hudStatusText.textContent =
-        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.7+)';
+        'Connected to the server, but no video frames are arriving — make sure the phone app is streaming (v1.6.8+)';
       showToast('No video frames received — update the phone app to the latest version', 5000);
     }
   }, 6000);
 }
 
 // IPC Frame Stream Consumer
-let incomingFrameSeq = 0;
-let lastRenderedSeq = 0;
 window.api.onVideoFrame(async (buffer) => {
+  const currentGen = streamGeneration;
   const seq = ++incomingFrameSeq;
   try {
     const blob = new Blob([buffer], { type: 'image/jpeg' });
     const bitmap = await createImageBitmap(blob);
-    if (seq < lastRenderedSeq) {
+    if (!isConnected || currentGen !== streamGeneration || seq < lastRenderedSeq) {
       bitmap.close();
       return;
     }

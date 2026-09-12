@@ -11,6 +11,7 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -123,8 +124,8 @@ class StreamServer(
 ) {
     private val videoClientList = CopyOnWriteArrayList<VideoClient>()
     private val audioClientList = CopyOnWriteArrayList<AudioClient>()
-    val videoClients: List<VideoClient> get() = videoClientList.toList()
-    val audioClients: List<AudioClient> get() = audioClientList.toList()
+    val videoClients: List<VideoClient> get() = videoClientList
+    val audioClients: List<AudioClient> get() = audioClientList
 
     private var serverSocket: ServerSocket? = null
     private var acceptThread: Thread? = null
@@ -139,7 +140,7 @@ class StreamServer(
         ThreadFactory { runnable ->
             Thread(runnable, "opencam-server-conn-${threadNumber.incrementAndGet()}")
         },
-        ThreadPoolExecutor.CallerRunsPolicy(),
+        ThreadPoolExecutor.AbortPolicy(),
     )
 
     fun start(): Boolean {
@@ -165,8 +166,12 @@ class StreamServer(
             val socket = try {
                 serverSocket?.accept()
             } catch (_: Exception) {
-                if (serverSocket?.isClosed == true) break
-                Thread.sleep(100)
+                if (closed.get() || serverSocket?.isClosed == true) break
+                try {
+                    Thread.sleep(100)
+                } catch (_: InterruptedException) {
+                    break
+                }
                 null
             } ?: continue
             try {
@@ -174,6 +179,8 @@ class StreamServer(
                 socket.keepAlive = true
                 socket.soTimeout = REQUEST_TIMEOUT_MS
                 connectionPool.execute { handleConnection(socket) }
+            } catch (_: RejectedExecutionException) {
+                try { socket.close() } catch (_: IOException) {}
             } catch (_: Throwable) {
                 try { socket.close() } catch (_: Exception) {}
             }

@@ -3,6 +3,7 @@ package com.opencam
 import com.opencam.encode.Bitstream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Test
 
 class BitstreamTest {
@@ -14,7 +15,21 @@ class BitstreamTest {
         val result = Bitstream.toAnnexB(annexBData, 4)
 
         // Should return exact same array reference (fast path, zero allocation)
-        assertEquals(annexBData, result)
+        assertSame(annexBData, result)
+    }
+
+    @Test
+    fun testToAnnexBWith3ByteStartCode() {
+        // Starts with 00 00 01 (Annex-B 3-byte start code commonly used for P-frames)
+        val pFrameData = byteArrayOf(0x00, 0x00, 0x01, 0x41, 0x05, 0x06)
+        val result = Bitstream.toAnnexB(pFrameData, 4)
+
+        // Should return exact same array reference (fast path, zero allocation)
+        assertSame(pFrameData, result)
+
+        // Exactly 3 bytes minimum start code
+        val exactThree = byteArrayOf(0x00, 0x00, 0x01)
+        assertSame(exactThree, Bitstream.toAnnexB(exactThree, 4))
     }
 
     @Test

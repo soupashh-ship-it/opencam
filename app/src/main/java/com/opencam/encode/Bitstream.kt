@@ -24,10 +24,9 @@ object Bitstream {
     fun toAnnexB(data: ByteArray, lengthSize: Int = 4): ByteArray {
         if (data.isEmpty() || lengthSize !in 1..4) return data
 
-        // Fast path: already Annex-B with 4-byte start code (00 00 00 01) - skip processing/allocation entirely.
-        if (lengthSize == 4 && data.size >= 4 &&
-            data[0] == 0.toByte() && data[1] == 0.toByte() &&
-            data[2] == 0.toByte() && data[3] == 1.toByte()
+        // Fast path: already Annex-B with 3-byte (00 00 01) or 4-byte (00 00 00 01) start code - skip processing/allocation entirely.
+        if (data.size >= 3 && data[0] == 0.toByte() && data[1] == 0.toByte() &&
+            (data[2] == 1.toByte() || (data.size >= 4 && data[2] == 0.toByte() && data[3] == 1.toByte()))
         ) {
             return data
         }
