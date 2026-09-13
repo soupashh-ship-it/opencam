@@ -378,9 +378,11 @@ btnConnect.addEventListener('click', () => {
     ipInput.focus();
     return;
   }
-  const ipValid = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split('.').every((v) => Number(v) >= 0 && Number(v) <= 255);
+  const isLocalhost = ip.toLowerCase() === 'localhost';
+  const isIpv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) && ip.split('.').every((v) => Number(v) >= 0 && Number(v) <= 255);
+  const ipValid = isLocalhost || isIpv4;
   if (!ipValid) {
-    showToast('Enter a valid IPv4 address, for example 192.168.1.42');
+    showToast('Enter a valid IPv4 address (e.g. 192.168.1.42 or 127.0.0.1 for USB)');
     ipInput.focus();
     return;
   }
@@ -561,7 +563,7 @@ if (btnScan) {
       localStorage.setItem('opencam_ip', foundIp);
       showToast(`Discovered phone at ${foundIp}!`);
     } else {
-      showToast('No phone found on Wi-Fi — ensure OpenCam app is open');
+      showToast('No phone found on Wi-Fi — ensure OpenCam is open and streaming (START pressed)');
     }
   });
 }

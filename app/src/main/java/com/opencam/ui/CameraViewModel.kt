@@ -21,6 +21,12 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     val state: StateFlow<StreamState> = stream.state
     val config: StateFlow<StreamConfig> = stream.config
 
+    init {
+        stream.refreshNetworkState()
+    }
+
+    fun refreshNetworkState() = stream.refreshNetworkState()
+
     fun updateConfig(transform: (StreamConfig) -> StreamConfig) = stream.updateConfig(transform)
     fun flipCamera() = stream.flipCamera()
     fun toggleMirror() = stream.toggleMirror()

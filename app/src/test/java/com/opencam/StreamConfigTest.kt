@@ -29,9 +29,9 @@ class StreamConfigTest {
     @Test
     fun testDefaultStreamConfig() {
         val config = StreamConfig()
-        assertEquals(1280, config.width)
-        assertEquals(720, config.height)
-        assertEquals(Codec.AVC, config.codec)
+        assertEquals(1920, config.width)
+        assertEquals(1080, config.height)
+        assertEquals(Codec.MJPEG, config.codec)
         assertEquals(4747, config.port)
         assertTrue(config.bitrateMbps in 1..50)
     }

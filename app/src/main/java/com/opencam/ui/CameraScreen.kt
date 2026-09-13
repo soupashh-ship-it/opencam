@@ -169,6 +169,13 @@ private fun CameraScreen(
     // Reset the zoom UI whenever the camera switches — the new camera starts at 1x.
     var zoomScale by remember(state.cameraId) { mutableFloatStateOf(1f) }
 
+    LaunchedEffect(Unit) {
+        viewModel.refreshNetworkState()
+    }
+    LaunchedEffect(showQr) {
+        if (showQr) viewModel.refreshNetworkState()
+    }
+
     Box(
         Modifier
             .fillMaxSize()
@@ -216,7 +223,10 @@ private fun CameraScreen(
             onToggleStream = {
                 if (state.running) StreamingService.stop(context) else StreamingService.start(context)
             },
-            onQr = { showQr = true },
+            onQr = {
+                viewModel.refreshNetworkState()
+                showQr = true
+            },
             onSettings = { showSettings = true },
         )
 
@@ -470,7 +480,10 @@ private fun StatusBar(
 }
 
 private fun statusLine(state: StreamState): String {
-    if (!state.running) return "Streaming is off"
+    if (!state.running) {
+        val ip = state.ipAddress
+        return if (ip != null) "Ready — IP: $ip:${state.port} (Press Start)" else "Streaming is off"
+    }
     val ip = state.ipAddress ?: "no network"
     val codec = state.codec?.wireName?.uppercase() ?: ""
     val res = when {
@@ -965,14 +978,14 @@ private fun PermissionScreen(onRequest: () -> Unit) {
         verticalArrangement = Arrangement.Center
     ) {
         Text(
-            "OpenCam needs camera and microphone access",
+            "OpenCam needs camera access",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            "Turn your phone into a wireless webcam for OBS — with audio, HD video, autofocus, zoom, torch and more. No payment required.",
+            "Turn your phone into a wireless webcam for OBS — with HD video, autofocus, zoom, torch and more. Microphone permission is optional for audio streaming.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center

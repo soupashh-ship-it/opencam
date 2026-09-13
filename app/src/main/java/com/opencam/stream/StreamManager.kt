@@ -7,6 +7,10 @@ import android.graphics.SurfaceTexture
 import android.graphics.YuvImage
 import android.media.Image
 import android.media.ImageReader
+import android.net.ConnectivityManager
+import android.net.LinkProperties
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.OrientationEventListener
@@ -30,6 +34,7 @@ import com.opencam.util.BatteryUtils
 import com.opencam.util.CameraRotation
 import com.opencam.util.NetworkUtils
 import com.opencam.util.Nv21Rotation
+import com.opencam.util.Permissions
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import org.json.JSONObject
@@ -81,11 +86,53 @@ class StreamManager(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("opencam", Context.MODE_PRIVATE)
 
-    private val _state = MutableStateFlow(StreamState())
-    val state: StateFlow<StreamState> = _state.asStateFlow()
-
     private val _config = MutableStateFlow(loadConfig())
     val config: StateFlow<StreamConfig> = _config.asStateFlow()
+
+    private val _state = MutableStateFlow(
+        StreamState(
+            running = false,
+            port = _config.value.port,
+            ipAddress = NetworkUtils.getLocalIpv4(),
+            battery = BatteryUtils.batteryPercent(appContext),
+        ),
+    )
+    val state: StateFlow<StreamState> = _state.asStateFlow()
+
+    private val connectivityManager =
+        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            refreshNetworkState()
+        }
+        override fun onLost(network: Network) {
+            refreshNetworkState()
+        }
+        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+            refreshNetworkState()
+        }
+        override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+            refreshNetworkState()
+        }
+    }
+
+    init {
+        refreshNetworkState()
+        try {
+            connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+        } catch (_: Throwable) {}
+    }
+
+    fun refreshNetworkState() {
+        val ip = NetworkUtils.getLocalIpv4()
+        _state.update { current ->
+            current.copy(
+                ipAddress = ip ?: current.ipAddress,
+                battery = BatteryUtils.batteryPercent(appContext),
+            )
+        }
+    }
 
     private val camera = Camera2Controller(appContext)
     private val managerThread = HandlerThread("opencam-manager").apply { start() }
@@ -180,7 +227,7 @@ class StreamManager(context: Context) {
         _state.value = StreamState(
             running = true,
             port = cfg.port,
-            ipAddress = NetworkUtils.getLocalIpv4(),
+            ipAddress = NetworkUtils.getLocalIpv4() ?: _state.value.ipAddress,
             battery = BatteryUtils.batteryPercent(appContext),
         )
         try { orientationEventListener.enable() } catch (_: Exception) {}
@@ -210,6 +257,7 @@ class StreamManager(context: Context) {
                 _state.value = StreamState(
                     running = false,
                     port = cfg.port,
+                    ipAddress = NetworkUtils.getLocalIpv4() ?: _state.value.ipAddress,
                     battery = BatteryUtils.batteryPercent(appContext),
                 )
             } finally {
@@ -714,6 +762,7 @@ class StreamManager(context: Context) {
 
     private fun startAudioIfNeeded(cfg: StreamConfig) {
         if (!cfg.audioEnabled) return
+        if (!Permissions.hasAudio(appContext)) return
         val encoder = AudioEncoder { data, ptsUs, isConfig ->
             broadcastAudio(data, ptsUs, isConfig)
         }
@@ -941,7 +990,6 @@ class StreamManager(context: Context) {
                 // every app-side change triggers exactly such a reconnect). Only
                 // genuinely new client requests override the app's config.
                 if (streamParametersChanged && requested != previousRequest) {
-                    server?.closeVideoClients()
                     val changed = sanitizeConfig(
                         current.copy(
                             codec = client.codec,

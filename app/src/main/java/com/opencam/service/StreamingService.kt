@@ -18,6 +18,7 @@ import com.opencam.OpenCamApplication
 import com.opencam.R
 import com.opencam.stream.StreamManager
 import com.opencam.stream.StreamManagerHolder
+import com.opencam.util.Permissions
 
 /** Keeps the camera, encoders and TCP server alive while the app is backgrounded. */
 class StreamingService : Service() {
@@ -116,11 +117,16 @@ class StreamingService : Service() {
     private fun startInForeground() {
         val notification = buildNotification(notificationText())
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val type = if (Permissions.hasAudio(this)) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+                type,
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)

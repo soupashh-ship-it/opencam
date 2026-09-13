@@ -297,7 +297,12 @@ class StreamServer(
             if (value == -1) break
             if (value == '\n'.code) {
                 val parsed = Protocol.parseRequestLine(buffer.toString(Charsets.UTF_8.name()))
-                drainHeaders(input)
+                if (parsed != null) {
+                    when (Protocol.parseRequest(parsed.first, parsed.second)) {
+                        is Protocol.Request.Video, is Protocol.Request.Audio -> return parsed
+                        else -> drainHeaders(input)
+                    }
+                }
                 return parsed
             }
             if (value != '\r'.code) buffer.write(value)
@@ -318,7 +323,7 @@ class StreamServer(
 
     private fun drainHeaders(input: InputStream) {
         try {
-            var history = 0L
+            var history = 0x0D0AL
             while (true) {
                 val value = input.read()
                 if (value == -1) return

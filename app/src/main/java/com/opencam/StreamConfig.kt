@@ -43,9 +43,9 @@ enum class WhiteBalance(val displayName: String, val mode: Int) {
 
 /** Live streaming configuration. Every change is applied by the StreamManager. */
 data class StreamConfig(
-    val codec: Codec = Codec.AVC,
-    val width: Int = 1280,
-    val height: Int = 720,
+    val codec: Codec = Codec.MJPEG,
+    val width: Int = 1920,
+    val height: Int = 1080,
     val fps: Int = 30,
     val bitrateMbps: Int = 8,
     val jpegQuality: Int = 85,

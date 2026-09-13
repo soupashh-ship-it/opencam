@@ -5,6 +5,12 @@ const http = require('http');
 const fs = require('fs');
 const { buildVideoRequest, createFrameParser } = require('./stream-parser');
 const {
+  formatDiagnosticMessage,
+  computeSubnetRanges,
+  normalizeHost,
+  intToIp,
+} = require('./network-diagnostics');
+const {
   VirtualCamFeeder,
   registerVirtualCamera,
   unregisterVirtualCamera,
@@ -124,7 +130,8 @@ function connectVideo(ip, port, codec, width, height, fps) {
     },
   });
 
-  sock.connect(port, ip, () => {
+  const connectHost = normalizeHost(ip);
+  sock.connect(port, connectHost, () => {
     if (stopRequested || !isCurrent()) return;
     const req = buildVideoRequest(codec, width, height, port);
     sock.write(req);
@@ -141,16 +148,8 @@ function connectVideo(ip, port, codec, width, height, fps) {
     lastConnectError = err;
     if (!stopRequested) {
       const code = err && err.code;
-      if (code === 'ECONNREFUSED') {
-        sendStatus(
-          'error',
-          `Phone not reachable at ${ip}:${port} — is the OpenCam app open and streaming (Start pressed)?`
-        );
-      } else if (code === 'ETIMEDOUT') {
-        sendStatus('error', `No response from ${ip}:${port} — check both devices are on the same Wi-Fi.`);
-      } else {
-        sendStatus('error', `Connection error: ${err.message}`);
-      }
+      const msg = formatDiagnosticMessage(code, ip, port, `Connection error: ${err.message}`);
+      sendStatus('error', msg);
       lastErrorTime = Date.now();
     }
   });
@@ -202,12 +201,15 @@ function scheduleReconnect(ip, port, codec, width, height, fps) {
     }, 3000);
   } else {
     isConnected = false;
-    sendStatus(
-      'failed',
-      `Could not connect to ${ip}:${port}. Check: (1) the OpenCam app is open and streaming, ` +
-        '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct. If the phone app is ' +
-        'outdated, update it to v1.7.0 or newer. Press Connect to try again.'
+    const lastCode = lastConnectError && lastConnectError.code;
+    const failMsg = formatDiagnosticMessage(
+      lastCode,
+      ip,
+      port,
+      `Could not connect to ${ip}:${port}. Check: (1) OpenCam app is open and streaming (START pressed), ` +
+        '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct.'
     );
+    sendStatus('failed', failMsg);
   }
 }
 
@@ -315,31 +317,13 @@ ipcMain.handle('scan-devices', async (_event, port = 4747) => {
   if (!Number.isInteger(numericPort) || numericPort < 1 || numericPort > 65535) return null;
 
   const interfaces = require('os').networkInterfaces();
-  const subnets = new Set();
-  const ipv4ToInt = (value) => value.split('.').reduce((n, octet) => (n << 8) | Number(octet), 0) >>> 0;
-  const intToIp = (value) => [24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join('.');
+  const ranges = computeSubnetRanges(interfaces);
 
-  for (const entries of Object.values(interfaces)) {
-    for (const iface of entries || []) {
-      if (iface.family !== 'IPv4' || iface.internal || !iface.netmask) continue;
-      const mask = ipv4ToInt(iface.netmask);
-      const address = ipv4ToInt(iface.address);
-      const network = (address & mask) >>> 0;
-      const broadcast = (network | (~mask >>> 0)) >>> 0;
-      const first = network + 1;
-      const last = broadcast - 1;
-      if (last >= first && last - first <= 1022) {
-        subnets.add(JSON.stringify({ first, last }));
-      }
-    }
-  }
-
-  const ranges = [...subnets].map((value) => JSON.parse(value));
   if (ranges.length === 0) return null;
 
   const probe = (targetIp) => new Promise((resolve) => {
     const req = http.request(
-      { host: targetIp, port: numericPort, path: '/v1/status', method: 'GET', timeout: 650 },
+      { host: targetIp, port: numericPort, path: '/v1/status', method: 'GET', timeout: 1200 },
       (res) => {
         let data = '';
         res.setEncoding('utf8');

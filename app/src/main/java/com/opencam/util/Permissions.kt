@@ -7,15 +7,19 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 
 object Permissions {
-    /** Camera and microphone are required for the current full-streaming mode. */
+    /** Camera is essential for video streaming. Microphone is optional. */
     fun essentialPermissions(): Array<String> = arrayOf(
         Manifest.permission.CAMERA,
+    )
+
+    fun audioPermissions(): Array<String> = arrayOf(
         Manifest.permission.RECORD_AUDIO,
     )
 
-    /** Notification permission is requested when applicable, but denial must not block streaming. */
+    /** All permissions to request upfront (camera, optional audio, optional notifications). */
     fun requestPermissions(): Array<String> = buildList {
         addAll(essentialPermissions())
+        addAll(audioPermissions())
         if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
     }.toTypedArray()
 
@@ -24,4 +28,7 @@ object Permissions {
     }.toTypedArray()
 
     fun allGranted(context: Context): Boolean = missingEssential(context).isEmpty()
+
+    fun hasAudio(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 }
