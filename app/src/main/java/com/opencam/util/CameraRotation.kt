@@ -22,11 +22,17 @@ object CameraRotation {
      * Calculates the clockwise rotation angle in degrees required to make the stream upright
      * given the camera sensor orientation and physical device orientation.
      *
-     * In OpenCam's streaming pipeline, front-camera frames are horizontally mirrored
-     * to cancel the HAL selfie mirror (or apply user mirroring). Because horizontal reflection
-     * conjugates 2D rotation (M * R(theta) = R(-theta) * M), the vertical alignment of the
-     * image is preserved identically for both back and front cameras:
-     *   rotation = (sensorOrientation + deviceOrientationDeg) % 360
+     * This is the standard Camera2 JPEG-orientation formula (the app is locked to
+     * portrait, so the display rotation term is always 0):
+     * - Back camera:  rotation = (sensorOrientation + deviceOrientationDeg) % 360
+     * - Front camera: rotation = (sensorOrientation - deviceOrientationDeg) % 360
+     *
+     * The front formula is negated because OpenCam's stream pipeline horizontally
+     * mirrors front frames to cancel the HAL selfie mirror. A horizontal
+     * reflection conjugates 2D rotation (M * R(θ) = R(−θ) * M), so the sign of
+     * the device-orientation term flips. The deviceOrientationDeg values follow
+     * OrientationEventListener: 90 = left side up (clockwise tilt), 270 = right
+     * side up (counter-clockwise tilt).
      *
      * For example, on standard devices:
      * - Back camera (sensor 90°):
@@ -36,16 +42,21 @@ object CameraRotation {
      *   - Landscape left / counter-clockwise tilt (270°): 0°
      * - Front camera (sensor 270°):
      *   - Portrait (0°): 270°
-     *   - Landscape right / clockwise tilt (90°): 0°
+     *   - Landscape right / clockwise tilt (90°): 180°
      *   - Inverted portrait (180°): 90°
-     *   - Landscape left / counter-clockwise tilt (270°): 180°
+     *   - Landscape left / counter-clockwise tilt (270°): 0°
      */
     fun calculateStreamRotation(
         sensorOrientation: Int,
         deviceOrientationDeg: Int,
         isFrontFacing: Boolean = false,
     ): Int {
-        return normalize(sensorOrientation + deviceOrientationDeg)
+        val device = normalize(deviceOrientationDeg)
+        return if (isFrontFacing) {
+            normalize(sensorOrientation - device)
+        } else {
+            normalize(sensorOrientation + device)
+        }
     }
 
     /**

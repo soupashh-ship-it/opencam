@@ -300,6 +300,12 @@ record shows they were originally deferred rather than missed.
    It is, however, explicitly documented and locked by `CameraRotationTest`, and deciding it needs a
    physical device in four held orientations. **Recommended device test:** portrait, both landscape
    holds, and upside-down on both cameras; log what OBS actually shows before touching it.
+   **RESOLVED in the follow-up round:** the front camera indeed needed the negated
+   device term (`sensor - device`, the standard Camera2 JPEG formula for the mirrored
+   pipeline). The shared `+` sign left front-camera landscape holds 180° upside down
+   while portrait stayed correct — exactly the ambiguity called out above.
+   `calculateStreamRotation` now subtracts for `isFrontFacing`, and `CameraRotationTest`
+   locks the corrected table.
 2. **26 lint warnings** (0 errors): `UseTomlInstead`, `UseKtx`, `UnusedResources`, `ObsoleteSdkInt`,
    `MonochromeLauncherIcon`, `LockedOrientationActivity`. Cosmetic/advisory; `LockedOrientationActivity`
    is intentional (the UI is portrait-locked by design).

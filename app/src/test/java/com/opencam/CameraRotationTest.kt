@@ -83,18 +83,16 @@ class CameraRotationTest {
         assertEquals(270, CameraRotation.calculateStreamRotation(sensor, 0, isFront))
 
         // 2. Landscape Right hold (clockwise tilt, left side at top): device orientation = 90
-        // Physical top of scene enters sensor top; image is natively upright; rotation must be 0 deg.
-        // (270 + 90) % 360 = 0 deg
-        assertEquals(0, CameraRotation.calculateStreamRotation(sensor, 90, isFront))
+        // Front pipeline mirrors frames, conjugating the rotation: (270 - 90) % 360 = 180 deg.
+        assertEquals(180, CameraRotation.calculateStreamRotation(sensor, 90, isFront))
 
         // 3. Upside-down portrait hold: device orientation = 180
-        // (270 + 180) % 360 = 90 deg
+        // (270 - 180) % 360 = 90 deg
         assertEquals(90, CameraRotation.calculateStreamRotation(sensor, 180, isFront))
 
         // 4. Landscape Left hold (counter-clockwise tilt, right side at top): device orientation = 270
-        // Physical top of scene enters sensor bottom; image needs 180 deg to be upright.
-        // (270 + 270) % 360 = 180 deg
-        assertEquals(180, CameraRotation.calculateStreamRotation(sensor, 270, isFront))
+        // (270 - 270) % 360 = 0 deg
+        assertEquals(0, CameraRotation.calculateStreamRotation(sensor, 270, isFront))
     }
 
     @Test
@@ -107,11 +105,11 @@ class CameraRotationTest {
         assertEquals(180, CameraRotation.calculateStreamRotation(sensor, 180, isFrontFacing = false))
         assertEquals(270, CameraRotation.calculateStreamRotation(sensor, 270, isFrontFacing = false))
 
-        // Front-facing (mirrored pipeline)
+        // Front-facing (mirrored pipeline): device-orientation term is subtracted.
         assertEquals(0, CameraRotation.calculateStreamRotation(sensor, 0, isFrontFacing = true))
-        assertEquals(90, CameraRotation.calculateStreamRotation(sensor, 90, isFrontFacing = true))
+        assertEquals(270, CameraRotation.calculateStreamRotation(sensor, 90, isFrontFacing = true))
         assertEquals(180, CameraRotation.calculateStreamRotation(sensor, 180, isFrontFacing = true))
-        assertEquals(270, CameraRotation.calculateStreamRotation(sensor, 270, isFrontFacing = true))
+        assertEquals(90, CameraRotation.calculateStreamRotation(sensor, 270, isFrontFacing = true))
     }
 
     @Test
@@ -124,9 +122,9 @@ class CameraRotationTest {
 
         // Front camera with 90 degree sensor
         assertEquals(90, CameraRotation.calculateStreamRotation(90, 0, isFrontFacing = true))
-        assertEquals(180, CameraRotation.calculateStreamRotation(90, 90, isFrontFacing = true))
+        assertEquals(0, CameraRotation.calculateStreamRotation(90, 90, isFrontFacing = true))
         assertEquals(270, CameraRotation.calculateStreamRotation(90, 180, isFrontFacing = true))
-        assertEquals(0, CameraRotation.calculateStreamRotation(90, 270, isFrontFacing = true))
+        assertEquals(180, CameraRotation.calculateStreamRotation(90, 270, isFrontFacing = true))
     }
 
     @Test

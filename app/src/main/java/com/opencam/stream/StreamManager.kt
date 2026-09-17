@@ -562,9 +562,10 @@ class StreamManager(context: Context) {
 
         // The front camera's frames carry the HAL selfie mirror (the same flip
         // the preview cancels with flipX = frontFacing != mirror). Leaving that
-        // mirror inside the rotation chain inverts the response to phone holds,
-        // which turns a 90-degree hold into a 180-degree-off (upside-down)
-        // landscape stream. Flip the front stream once to cancel it; the user's
+        // mirror inside the rotation chain also conjugates the rotation
+        // (M * R(θ) = R(−θ) * M), so the device-orientation term must be
+        // subtracted for the front lens — calculateStreamRotation handles that.
+        // Flip the front stream once to cancel the HAL mirror; the user's
         // mirror toggle then re-applies it, exactly like the preview and MJPEG.
         val mirror = cfg.mirror xor camera.isFrontFacing
 
