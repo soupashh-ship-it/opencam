@@ -1,11 +1,11 @@
 {
   "name": "opencam-pc-studio",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Ultra high-performance native Windows PC Client for OpenCam Android Camera",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node test_stream_parser.js && node test_vcam.js && node test_renderer_sequencing.js && node test_discovery_and_diagnostics.js",
+    "test": "node test_stream_parser.js && node test_reconnect_policy.js && node test_vcam_status.js && node test_vcam_stream_integrity.js && node test_vcam.js && node test_renderer_sequencing.js && node test_discovery_and_diagnostics.js",
     "build": "electron-builder --win portable"
   },
   "keywords": [
