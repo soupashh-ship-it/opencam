@@ -100,31 +100,37 @@ class AudioEncoder(
 
     private fun drainLoop(mc: MediaCodec) {
         val info = MediaCodec.BufferInfo()
-        try {
-            while (running.get()) {
-                when (val index = mc.dequeueOutputBuffer(info, 10_000)) {
-                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> ensureConfigFromFormat(mc.outputFormat)
-                    MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
-                    else -> if (index >= 0) {
-                        try {
-                            val buffer = mc.getOutputBuffer(index)
-                            if (buffer != null && info.size > 0) {
-                                val payload = Bitstream.toByteArray(buffer, info.offset, info.size)
-                                if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                                    configSent = true
-                                    onPacket(payload, info.presentationTimeUs, true)
-                                } else {
-                                    onPacket(stripAdts(payload), info.presentationTimeUs, false)
-                                }
+        while (running.get()) {
+            val index = try {
+                mc.dequeueOutputBuffer(info, 10_000)
+            } catch (_: Exception) {
+                // Codec stopped/released underneath us.
+                return
+            }
+            when (index) {
+                MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    try { ensureConfigFromFormat(mc.outputFormat) } catch (_: Exception) {}
+                }
+                else -> if (index >= 0) {
+                    // One bad buffer must not permanently kill the audio drain loop.
+                    try {
+                        val buffer = mc.getOutputBuffer(index)
+                        if (buffer != null && info.size > 0) {
+                            val payload = Bitstream.toByteArray(buffer, info.offset, info.size)
+                            if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                                configSent = true
+                                onPacket(payload, info.presentationTimeUs, true)
+                            } else {
+                                onPacket(stripAdts(payload), info.presentationTimeUs, false)
                             }
-                        } finally {
-                            mc.releaseOutputBuffer(index, false)
                         }
+                    } catch (_: Exception) {
+                    } finally {
+                        try { mc.releaseOutputBuffer(index, false) } catch (_: Exception) {}
                     }
                 }
             }
-        } catch (_: Exception) {
-            // Stopped.
         }
     }
 
@@ -133,7 +139,10 @@ class AudioEncoder(
         if ((data[0].toInt() and 0xFF) != 0xFF || (data[1].toInt() and 0xF0) != 0xF0) return data
         val protectionAbsent = (data[1].toInt() and 0x01) != 0
         val headerLen = if (protectionAbsent) 7 else 9
-        return if (data.size > headerLen) data.copyOfRange(headerLen, data.size) else data
+        // A header-only frame carries no audio payload. Returning the raw buffer would
+        // publish the ADTS header itself as an access unit; an empty payload is dropped
+        // by the broadcaster instead.
+        return if (data.size > headerLen) data.copyOfRange(headerLen, data.size) else ByteArray(0)
     }
 
     private fun ensureConfigFromFormat(format: MediaFormat) {

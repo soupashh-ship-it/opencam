@@ -56,6 +56,15 @@ class StreamConfigTest {
     }
 
     @Test
+    fun testDefaultFpsIs60AndNotCappedAt30() {
+        // 60 is the product default at every layer (app, Studio, feeder).
+        assertEquals(60, StreamConfig().fps)
+        assertTrue("60 fps must be selectable", FPS_PRESETS.contains(60))
+        // Sanitising must let 60 through rather than clamping the rate down.
+        assertEquals(60, StreamConfig(fps = 60).sanitized().fps)
+    }
+
+    @Test
     fun testResolutionAndFpsPresets() {
         assertTrue(RESOLUTION_PRESETS.contains(1920 to 1080))
         assertTrue(RESOLUTION_PRESETS.contains(3840 to 2160))

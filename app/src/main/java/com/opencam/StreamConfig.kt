@@ -46,7 +46,9 @@ data class StreamConfig(
     val codec: Codec = Codec.MJPEG,
     val width: Int = 1920,
     val height: Int = 1080,
-    val fps: Int = 30,
+    /** Default capture rate. 60 is the default everywhere (app, Studio, feeder); the camera
+     *  layer falls back to [30, 60] or [30, 30] when the hardware cannot do 60. */
+    val fps: Int = 60,
     val bitrateMbps: Int = 8,
     val jpegQuality: Int = 85,
     val audioEnabled: Boolean = true,

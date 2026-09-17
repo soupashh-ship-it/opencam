@@ -32,10 +32,17 @@ class GlRotator(
     inputHeight: Int,
     rotationDegrees: Int,
     mirrored: Boolean = false,
+    /**
+     * Size of the frame the rotation is rendered into (normally the encoder
+     * surface). Defaults to the input size for 0/180 rotations; 90/270 callers
+     * must pass the swapped size so the rotated image is not stretched.
+     */
+    outputWidth: Int = inputWidth,
+    outputHeight: Int = inputHeight,
 ) {
     private val rotation = ((rotationDegrees % 360) + 360) % 360
-    private val outputWidth = inputWidth
-    private val outputHeight = inputHeight
+    private val renderWidth = outputWidth
+    private val renderHeight = outputHeight
 
     private val thread = HandlerThread("opencam-rotate").apply { start() }
     private val handler = Handler(thread.looper)
@@ -63,6 +70,13 @@ class GlRotator(
 
     init {
         require(inputWidth > 0 && inputHeight > 0) { "Invalid GL input size" }
+        require(outputWidth > 0 && outputHeight > 0) { "Invalid GL output size" }
+        // A 90/270 rotation must render into a frame with the swapped dimensions,
+        // otherwise the two axes end up scaled unevenly (stretched output).
+        val swaps = rotation == 90 || rotation == 270
+        require(!swaps || (outputWidth == inputHeight && outputHeight == inputWidth)) {
+            "GL rotation ${rotation}deg needs ${inputHeight}x$inputWidth output, got ${outputWidth}x$outputHeight"
+        }
         val latch = CountDownLatch(1)
         var createdSurface: Surface? = null
         var failure: Throwable? = null
@@ -141,7 +155,7 @@ class GlRotator(
         }
         GLES20.glUseProgram(program)
         GLES20.glUniform1i(textureHandle, 0)
-        GLES20.glViewport(0, 0, outputWidth, outputHeight)
+        GLES20.glViewport(0, 0, renderWidth, renderHeight)
 
         val texIds = IntArray(1)
         GLES20.glGenTextures(1, texIds, 0)
@@ -169,7 +183,7 @@ class GlRotator(
         try {
             texture.updateTexImage()
             texture.getTransformMatrix(stMatrix)
-            GLES20.glViewport(0, 0, outputWidth, outputHeight)
+            GLES20.glViewport(0, 0, renderWidth, renderHeight)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             GLES20.glUseProgram(program)

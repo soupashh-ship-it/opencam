@@ -131,7 +131,14 @@ class StreamServer(
     private var acceptThread: Thread? = null
     private val closed = AtomicBoolean(true)
     private val threadNumber = AtomicInteger()
-    private val connectionPool = ThreadPoolExecutor(
+
+    /**
+     * Created on every successful [start] so a failed bind (or a stop/start cycle)
+     * cannot leave the instance with a shut-down pool that rejects every client.
+     */
+    @Volatile private var connectionPool: ThreadPoolExecutor? = null
+
+    private fun createConnectionPool(): ThreadPoolExecutor = ThreadPoolExecutor(
         2,
         4,
         30L,
@@ -143,20 +150,32 @@ class StreamServer(
         ThreadPoolExecutor.AbortPolicy(),
     )
 
+    private fun shutdownConnectionPool() {
+        try { connectionPool?.shutdownNow() } catch (_: Exception) {}
+        connectionPool = null
+    }
+
     fun start(): Boolean {
         if (!closed.compareAndSet(true, false)) return true
         return try {
-            serverSocket = ServerSocket().apply {
-                reuseAddress = true
-                bind(InetSocketAddress(port))
+            val socket = ServerSocket()
+            try {
+                socket.reuseAddress = true
+                socket.bind(InetSocketAddress(port))
+            } catch (t: Throwable) {
+                // Never leak a half-bound socket when the port is unavailable.
+                try { socket.close() } catch (_: Exception) {}
+                throw t
             }
+            serverSocket = socket
+            connectionPool = createConnectionPool()
             acceptThread = Thread({ acceptLoop() }, "opencam-server-accept").apply { start() }
             true
         } catch (_: IOException) {
             closed.set(true)
             try { serverSocket?.close() } catch (_: Exception) {}
             serverSocket = null
-            connectionPool.shutdownNow()
+            shutdownConnectionPool()
             false
         }
     }
@@ -178,7 +197,12 @@ class StreamServer(
                 socket.tcpNoDelay = true
                 socket.keepAlive = true
                 socket.soTimeout = REQUEST_TIMEOUT_MS
-                connectionPool.execute { handleConnection(socket) }
+                val pool = connectionPool
+                if (pool == null) {
+                    socket.close()
+                    continue
+                }
+                pool.execute { handleConnection(socket) }
             } catch (_: RejectedExecutionException) {
                 try { socket.close() } catch (_: IOException) {}
             } catch (_: Throwable) {
@@ -372,7 +396,7 @@ class StreamServer(
         acceptThread?.interrupt()
         try { acceptThread?.join(500) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         acceptThread = null
-        connectionPool.shutdownNow()
+        shutdownConnectionPool()
         closeVideoClients()
         closeAudioClients()
     }

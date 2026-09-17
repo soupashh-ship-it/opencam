@@ -47,5 +47,25 @@ object CameraRotation {
     ): Int {
         return normalize(sensorOrientation + deviceOrientationDeg)
     }
+
+    /**
+     * True when rotating by [degrees] exchanges the frame's width and height.
+     *
+     * A 90/270 rotation of a landscape sensor buffer produces upright portrait
+     * content, so the encoded frame has to be portrait as well. Rotating the
+     * content while keeping the landscape frame dimensions scales the two axes
+     * by different factors, which stretches the image (16:9 -> 9:16).
+     */
+    fun swapsDimensions(degrees: Int): Boolean {
+        val rotation = normalize(degrees)
+        return rotation == 90 || rotation == 270
+    }
+
+    /**
+     * Frame size produced by rotating a [width]x[height] buffer by [degrees].
+     * Returns the swapped size for 90/270 and the original size for 0/180.
+     */
+    fun orientedSize(width: Int, height: Int, degrees: Int): Pair<Int, Int> =
+        if (swapsDimensions(degrees)) height to width else width to height
 }
 

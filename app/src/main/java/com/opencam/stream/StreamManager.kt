@@ -141,6 +141,14 @@ class StreamManager(context: Context) {
     private var jpegHandler: Handler? = null
 
     @Volatile private var server: StreamServer? = null
+    /**
+     * Most recent codec configuration packet (SPS/PPS/VPS for video, AAC
+     * AudioSpecificConfig for audio). Replayed to every client that connects
+     * mid-stream, because a client that never sees the configuration cannot
+     * decode the frames that follow it.
+     */
+    @Volatile private var lastVideoConfigPacket: ByteArray? = null
+    @Volatile private var lastAudioConfigPacket: ByteArray? = null
     private var nsd: NsdHelper? = null
     private var videoEncoder: VideoEncoder? = null
     private var audioEncoder: AudioEncoder? = null
@@ -546,8 +554,11 @@ class StreamManager(context: Context) {
         // Incorporate physical accelerometer device orientation so the stream
         // stays upright when the phone is rotated to 9 o'clock, 3 o'clock, or 6 o'clock.
         val rotation = camera.streamRotationDegrees(deviceOrientationDegrees)
-        val outputWidth = sourceWidth
-        val outputHeight = sourceHeight
+        // A 90/270 rotation turns the landscape sensor buffer upright, so the frame
+        // that is encoded/handed to the client has to swap dimensions. Rotating the
+        // content while keeping the sensor frame size scales the two axes by
+        // different factors, which stretches the picture (16:9 squeezed into 9:16).
+        val (outputWidth, outputHeight) = CameraRotation.orientedSize(sourceWidth, sourceHeight, rotation)
 
         // The front camera's frames carry the HAL selfie mirror (the same flip
         // the preview cancels with flipX = frontFacing != mirror). Leaving that
@@ -664,6 +675,31 @@ class StreamManager(context: Context) {
         }
     }
 
+    /**
+     * Starts a video encoder, degrading the configuration rather than failing the stream.
+     *
+     * Fallback order: the other codec at the configured rate (HEVC -> AVC, as before), then a
+     * lower frame rate. The default capture rate is 60 and many devices cannot encode 1080p60;
+     * without this, such a device would lose video entirely instead of streaming at 30.
+     */
+    private fun startEncoderWithFallback(
+        outputWidth: Int,
+        outputHeight: Int,
+        cfg: StreamConfig,
+    ): Pair<VideoEncoder, StreamConfig>? {
+        val codecs = if (cfg.codec == Codec.HEVC) listOf(Codec.HEVC, Codec.AVC) else listOf(cfg.codec)
+        val rates = if (cfg.fps > 30) listOf(cfg.fps, 30) else listOf(cfg.fps)
+        for (rate in rates) {
+            for (codec in codecs) {
+                val attempt = cfg.copy(codec = codec, fps = rate)
+                val encoder = createVideoEncoder(codec, outputWidth, outputHeight, attempt)
+                if (encoder.start()) return encoder to attempt
+                encoder.stop()
+            }
+        }
+        return null
+    }
+
     private fun startEncodedSession(
         cfg: StreamConfig,
         generation: Long,
@@ -674,25 +710,17 @@ class StreamManager(context: Context) {
         rotation: Int,
         mirror: Boolean,
     ) {
-        var activeCodec = cfg.codec
-        var encoder = createVideoEncoder(activeCodec, outputWidth, outputHeight, cfg)
-        if (!encoder.start()) {
-            encoder.stop()
-            if (activeCodec == Codec.HEVC) {
-                activeCodec = Codec.AVC
-                encoder = createVideoEncoder(activeCodec, outputWidth, outputHeight, cfg)
-                if (!encoder.start()) {
-                    encoder.stop()
-                    failRebuild(generation, "No H.264/H.265 hardware encoder is available")
-                    return
-                }
-                val fallbackConfig = _config.value.copy(codec = Codec.AVC)
-                _config.value = fallbackConfig
-                persist(fallbackConfig)
-            } else {
-                failRebuild(generation, "No ${activeCodec.displayName} hardware encoder is available")
-                return
-            }
+        val started = startEncoderWithFallback(outputWidth, outputHeight, cfg)
+        if (started == null) {
+            failRebuild(generation, "No ${cfg.codec.displayName} hardware encoder is available")
+            return
+        }
+        val encoder = started.first
+        val effective = started.second
+        if (effective != cfg) {
+            // Keep the UI and the persisted preferences honest about what is actually running.
+            _config.value = effective
+            persist(effective)
         }
 
         val encoderSurface = encoder.surface
@@ -714,7 +742,15 @@ class StreamManager(context: Context) {
             encoderSurface
         } else {
             val rotator = try {
-                GlRotator(encoderSurface, sourceWidth, sourceHeight, rotation, mirrored = mirror)
+                GlRotator(
+                    encoderSurface = encoderSurface,
+                    inputWidth = sourceWidth,
+                    inputHeight = sourceHeight,
+                    rotationDegrees = rotation,
+                    mirrored = mirror,
+                    outputWidth = outputWidth,
+                    outputHeight = outputHeight,
+                )
             } catch (_: Throwable) {
                 encoder.stop()
                 failRebuild(generation, "Could not initialize video rotation")
@@ -724,14 +760,14 @@ class StreamManager(context: Context) {
             rotator.inputSurface
         }
         videoEncoder = encoder
-        startAudioIfNeeded(cfg)
+        startAudioIfNeeded(effective)
 
-        val finalCodec = activeCodec
+        val finalCodec = effective.codec
         camera.configure(
             targets = listOf(target),
             requestedWidth = sourceWidth,
             requestedHeight = sourceHeight,
-            requestedFps = cfg.fps,
+            requestedFps = effective.fps,
         ) { fps, _ ->
             managerHandler.post {
                 completeRebuild(
@@ -783,7 +819,9 @@ class StreamManager(context: Context) {
             failRebuild(generation, "Camera session configuration failed")
             return
         }
-        val swap = (codec == Codec.MJPEG) && (rotation == 90 || rotation == 270)
+        // Every codec now frames its output at the rotated size (see doRebuild),
+        // so the reported stream dimensions swap for any 90/270 rotation.
+        val swap = CameraRotation.swapsDimensions(rotation)
         val sWidth = if (swap) sourceSize.height else sourceSize.width
         val sHeight = if (swap) sourceSize.width else sourceSize.height
         _state.update {
@@ -819,6 +857,10 @@ class StreamManager(context: Context) {
 
     /** GL must be released before its encoder surface/codec is destroyed. */
     private fun stopEncoders() {
+        // The next encoder build emits a fresh codec configuration; stale SPS/PPS
+        // must not be replayed to clients of the new stream.
+        lastVideoConfigPacket = null
+        lastAudioConfigPacket = null
         try { glRotator?.release() } catch (_: Exception) {}
         glRotator = null
         try { videoEncoder?.stop() } catch (_: Exception) {}
@@ -901,12 +943,14 @@ class StreamManager(context: Context) {
     private fun broadcastVideo(data: ByteArray, ptsUs: Long, isConfig: Boolean = false) {
         if (data.isEmpty()) return
         val packet = Protocol.framePacket(data, if (isConfig) Protocol.NO_PTS else ptsUs)
+        if (isConfig) lastVideoConfigPacket = packet
         server?.videoClients?.forEach { it.send(packet) }
     }
 
     private fun broadcastAudio(data: ByteArray, ptsUs: Long, isConfig: Boolean = false) {
         if (data.isEmpty()) return
         val packet = Protocol.framePacket(data, if (isConfig) Protocol.NO_PTS else ptsUs)
+        if (isConfig) lastAudioConfigPacket = packet
         server?.audioClients?.forEach { it.send(packet) }
     }
 
@@ -975,6 +1019,9 @@ class StreamManager(context: Context) {
 
     private val callbacks = object : ServerCallbacks {
         override fun onVideoClientConnected(client: VideoClient) {
+            // Replay SPS/PPS/VPS first: a client that joins a running stream
+            // otherwise receives frames with no decoder configuration.
+            lastVideoConfigPacket?.let { client.send(it) }
             managerHandler.post {
                 _state.update { it.copy(videoClients = server?.videoClients?.size ?: 0) }
                 val current = _config.value
@@ -1010,6 +1057,7 @@ class StreamManager(context: Context) {
         }
 
         override fun onAudioClientConnected(client: AudioClient) {
+            lastAudioConfigPacket?.let { client.send(it) }
             _state.update { it.copy(audioClients = server?.audioClients?.size ?: 0) }
         }
 

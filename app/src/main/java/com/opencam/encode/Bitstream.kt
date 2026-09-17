@@ -36,6 +36,26 @@ object Bitstream {
         return data
     }
 
+    /**
+     * Concatenates codec configuration buffers (SPS/PPS/VPS) into a single
+     * Annex-B blob, converting any length-prefixed parts first. MediaCodec
+     * delivers these either as separate `csd-0`/`csd-1` buffers (Annex-B) or as
+     * AVCC/HVCC length-prefixed data, so each part is normalized before merging.
+     */
+    fun concatAnnexB(parts: List<ByteArray>, lengthSize: Int = 4): ByteArray {
+        val normalized = parts.filter { it.isNotEmpty() }.map { toAnnexB(it, lengthSize) }
+        if (normalized.isEmpty()) return ByteArray(0)
+        if (normalized.size == 1) return normalized[0]
+        val total = normalized.sumOf { it.size }
+        val out = ByteArray(total)
+        var offset = 0
+        for (part in normalized) {
+            System.arraycopy(part, 0, out, offset, part.size)
+            offset += part.size
+        }
+        return out
+    }
+
     private fun convertLengthPrefixed(data: ByteArray, lengthSize: Int): ByteArray? {
         val output = ByteArrayOutputStream(data.size + 64)
         var offset = 0

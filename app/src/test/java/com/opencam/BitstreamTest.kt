@@ -51,4 +51,33 @@ class BitstreamTest {
         // Corrupt length or too small: returns original data as fallback
         assertArrayEquals(small, Bitstream.toAnnexB(small, 4))
     }
+
+    @Test
+    fun testConcatAnnexBMergesConfigBuffers() {
+        // MediaCodec reports SPS and PPS separately; the client needs them in one
+        // configuration packet before the first frame.
+        val sps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1F)
+        val pps = byteArrayOf(0x00, 0x00, 0x01, 0x68, 0xCE.toByte(), 0x3C, 0x80.toByte())
+
+        assertArrayEquals(sps + pps, Bitstream.concatAnnexB(listOf(sps, pps)))
+    }
+
+    @Test
+    fun testConcatAnnexBNormalizesLengthPrefixedParts() {
+        val avccSps = byteArrayOf(0x00, 0x00, 0x00, 0x04, 0x67, 0x42, 0x00, 0x1F)
+        val annexBPps = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68, 0xCE.toByte(), 0x3C, 0x80.toByte())
+        val expected = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x1F) + annexBPps
+
+        assertArrayEquals(expected, Bitstream.concatAnnexB(listOf(avccSps, annexBPps)))
+    }
+
+    @Test
+    fun testConcatAnnexBEdgeCases() {
+        assertEquals(0, Bitstream.concatAnnexB(emptyList()).size)
+        assertEquals(0, Bitstream.concatAnnexB(listOf(ByteArray(0), ByteArray(0))).size)
+
+        val single = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x68, 0x01)
+        // A single part is returned as-is: no copy, no re-allocation.
+        assertSame(single, Bitstream.concatAnnexB(listOf(single)))
+    }
 }

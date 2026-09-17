@@ -5,6 +5,7 @@ import com.opencam.server.ServerCallbacks
 import com.opencam.server.StreamServer
 import com.opencam.server.VideoClient
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -196,6 +197,53 @@ class StreamServerTest {
                 assertTrue("Connection took ${elapsed}ms, should be < 200ms", elapsed < 200)
             }
         } finally {
+            server.stop()
+        }
+    }
+
+    @Test
+    fun testServerRestartsAfterFailedBindAndAcceptsClients() {
+        // A failed bind (port already taken) must not poison the instance: the
+        // connection pool is rebuilt on every successful start, so retrying after
+        // the port is freed has to accept real clients again.
+        val blocker = ServerSocket(0)
+        val port = blocker.localPort
+        val videoConnected = CountDownLatch(1)
+        val callbacks = object : ServerCallbacks {
+            override fun onVideoClientConnected(client: VideoClient) {
+                videoConnected.countDown()
+            }
+            override fun onVideoClientDisconnected(client: VideoClient) {}
+            override fun onAudioClientConnected(client: AudioClient) {}
+            override fun onAudioClientDisconnected(client: AudioClient) {}
+            override fun batteryPercent(): Int = 100
+            override fun onTally(state: String) {}
+            override fun statusJson(): String = """{"status":"ok"}"""
+            override fun applySettings(params: Map<String, String>) {}
+        }
+
+        val server = StreamServer(port, callbacks)
+        try {
+            assertFalse("Binding a port that is already in use must fail", server.start())
+
+            blocker.close()
+
+            assertTrue("The same instance must start once the port is free", server.start())
+            Socket("127.0.0.1", port).use { socket ->
+                socket.tcpNoDelay = true
+                val out = socket.getOutputStream()
+                out.write(
+                    ("GET /v5/video/jpg/1920x1080/port/$port/os/win/obs/1.1.0/client/test/hdr/0/nonce/1 " +
+                        "HTTP/1.1\r\n").toByteArray(Charsets.UTF_8)
+                )
+                out.flush()
+                assertTrue(
+                    "Video client must connect after a successful retry",
+                    videoConnected.await(2000, TimeUnit.MILLISECONDS)
+                )
+            }
+        } finally {
+            try { blocker.close() } catch (_: Exception) {}
             server.stop()
         }
     }

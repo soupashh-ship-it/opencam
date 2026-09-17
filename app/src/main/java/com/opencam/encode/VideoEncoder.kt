@@ -20,6 +20,7 @@ class VideoEncoder(
     private var inputSurface: Surface? = null
     private var drainThread: Thread? = null
     private val running = AtomicBoolean(false)
+    private var configSent = false
 
     val surface: Surface? get() = inputSurface
 
@@ -52,28 +53,59 @@ class VideoEncoder(
 
     private fun drainLoop(mc: MediaCodec) {
         val info = MediaCodec.BufferInfo()
-        try {
-            while (running.get()) {
-                when (val index = mc.dequeueOutputBuffer(info, 10_000)) {
-                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED,
-                    MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
-                    else -> if (index >= 0) {
-                        try {
-                            val buffer = mc.getOutputBuffer(index)
-                            if (buffer != null && info.size > 0) {
-                                val payload = Bitstream.toByteArray(buffer, info.offset, info.size)
-                                val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                                onPacket(Bitstream.toAnnexB(payload), info.presentationTimeUs, isConfig)
-                            }
-                        } finally {
-                            mc.releaseOutputBuffer(index, false)
+        while (running.get()) {
+            val index = try {
+                mc.dequeueOutputBuffer(info, 10_000)
+            } catch (_: Exception) {
+                // Codec stopped/released underneath us.
+                return
+            }
+            when (index) {
+                MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> emitConfigFromFormat(mc)
+                else -> if (index >= 0) {
+                    // A single malformed buffer must not kill the whole drain loop
+                    // (that used to stop video permanently until a full rebuild).
+                    try {
+                        val buffer = mc.getOutputBuffer(index)
+                        if (buffer != null && info.size > 0) {
+                            val payload = Bitstream.toByteArray(buffer, info.offset, info.size)
+                            val isConfig = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
+                            val annexB = Bitstream.toAnnexB(payload)
+                            // SPS/PPS may arrive either as a codec-config buffer or only
+                            // through INFO_OUTPUT_FORMAT_CHANGED; send whichever comes
+                            // first exactly once, then never drop it for new clients.
+                            if (isConfig) configSent = true
+                            onPacket(annexB, info.presentationTimeUs, isConfig)
                         }
+                    } catch (_: Exception) {
+                    } finally {
+                        try { mc.releaseOutputBuffer(index, false) } catch (_: Exception) {}
                     }
                 }
             }
-        } catch (_: Exception) {
-            // Codec was stopped or the output surface disappeared.
         }
+    }
+
+    /**
+     * Emits SPS/PPS/VPS as a single configuration packet when the codec reports
+     * them only via the output format (no BUFFER_FLAG_CODEC_CONFIG buffer).
+     * Without this the client receives frames it cannot decode on such devices.
+     */
+    private fun emitConfigFromFormat(mc: MediaCodec) {
+        if (configSent) return
+        val format = try { mc.outputFormat } catch (_: Exception) { null } ?: return
+        val parts = listOf("csd-0", "csd-1", "csd-2").mapNotNull { key ->
+            val bytes = try {
+                format.getByteBuffer(key)?.let { Bitstream.toByteArray(it) }
+            } catch (_: Exception) {
+                null
+            }
+            bytes?.takeIf { it.isNotEmpty() }
+        }
+        if (parts.isEmpty()) return
+        configSent = true
+        onPacket(Bitstream.concatAnnexB(parts), 0L, true)
     }
 
     @Synchronized
@@ -82,6 +114,7 @@ class VideoEncoder(
         drainThread?.interrupt()
         try { drainThread?.join(500) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         drainThread = null
+        configSent = false
         releaseInternal()
     }
 

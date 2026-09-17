@@ -128,4 +128,45 @@ class CameraRotationTest {
         assertEquals(270, CameraRotation.calculateStreamRotation(90, 180, isFrontFacing = true))
         assertEquals(0, CameraRotation.calculateStreamRotation(90, 270, isFrontFacing = true))
     }
+
+    @Test
+    fun testSwapsDimensionsForQuarterTurns() {
+        // 0/180 preserve the frame size; 90/270 exchange width and height.
+        assertEquals(false, CameraRotation.swapsDimensions(0))
+        assertEquals(true, CameraRotation.swapsDimensions(90))
+        assertEquals(false, CameraRotation.swapsDimensions(180))
+        assertEquals(true, CameraRotation.swapsDimensions(270))
+        assertEquals(false, CameraRotation.swapsDimensions(360))
+        assertEquals(true, CameraRotation.swapsDimensions(-90))
+        assertEquals(false, CameraRotation.swapsDimensions(-360))
+        assertEquals(true, CameraRotation.swapsDimensions(450))
+    }
+
+    @Test
+    fun testOrientedSizeSwapsForQuarterTurns() {
+        // A sensor-90 back camera held in portrait needs a 90 degree rotation, so the
+        // 1920x1080 sensor buffer becomes a 1080x1920 upright frame.
+        assertEquals(1080 to 1920, CameraRotation.orientedSize(1920, 1080, 90))
+        assertEquals(1080 to 1920, CameraRotation.orientedSize(1920, 1080, 270))
+        assertEquals(1920 to 1080, CameraRotation.orientedSize(1920, 1080, 0))
+        assertEquals(1920 to 1080, CameraRotation.orientedSize(1920, 1080, 180))
+        // Landscape hold (sensor-90 back camera, device 90) resolves to 180: no swap.
+        val landscape = CameraRotation.calculateStreamRotation(90, 90, isFrontFacing = false)
+        assertEquals(180, landscape)
+        assertEquals(1920 to 1080, CameraRotation.orientedSize(1920, 1080, landscape))
+        // Portrait source sizes must swap symmetrically too.
+        assertEquals(1920 to 1080, CameraRotation.orientedSize(1080, 1920, 90))
+    }
+
+    @Test
+    fun testQuarterTurnFrameSpansSourceExtents() {
+        val sourceWidth = 1920
+        val sourceHeight = 1080
+        val output = CameraRotation.orientedSize(sourceWidth, sourceHeight, 90)
+        // A pure rotation maps one source pixel onto one output pixel per axis. If the
+        // frame does not span the source extents exactly, one axis is rescaled and the
+        // picture is stretched (16:9 squeezed into 9:16).
+        assertEquals(sourceWidth, output.second)
+        assertEquals(sourceHeight, output.first)
+    }
 }
