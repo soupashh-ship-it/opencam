@@ -284,6 +284,7 @@ class Inspector {
         try {
             string mapName = args.Length > 0 ? args[0] : "OBSVirtualCamVideo";
             bool sampleLoop = args.Length > 1 && args[1] == "--sample";
+            bool slotsMode = args.Length > 1 && args[1] == "--slots";
             MemoryMappedFile mmf = null;
             try { mmf = MemoryMappedFile.OpenExisting(mapName, MemoryMappedFileRights.Read); } catch {}
             if (mmf == null) {
@@ -295,6 +296,21 @@ class Inspector {
             }
             using (mmf)
             using (var va = mmf.CreateViewAccessor(0, 128, MemoryMappedFileAccess.Read)) {
+                if (slotsMode) {
+                    // First 16 bytes of each ring slot's pixel payload, so a test can tell the
+                    // standby card apart from live phone frames.
+                    uint o0 = va.ReadUInt32(12), o1 = va.ReadUInt32(16), o2 = va.ReadUInt32(20);
+                    Console.WriteLine("HDR|" + va.ReadUInt32(0));
+                    uint[] offs = new uint[] { o0, o1, o2 };
+                    byte[] sample = new byte[16];
+                    for (int i = 0; i < 3; i++) {
+                        using (var sv = mmf.CreateViewAccessor(offs[i] + 32, 16, MemoryMappedFileAccess.Read)) {
+                            sv.ReadArray(0, sample, 0, 16);
+                            Console.WriteLine("SLOT" + i + "|" + BitConverter.ToString(sample));
+                        }
+                    }
+                    return;
+                }
                 if (sampleLoop) {
                     uint last = va.ReadUInt32(0);
                     int changes = 0;
@@ -375,6 +391,20 @@ class Inspector {
     }
   }
 
+  /** Pixel sample of each of the three ring slots (null when unreadable). */
+  function sampleSlots(name = 'OBSVirtualCamVideo') {
+    try {
+      const out = execSync(`"${inspExe}" "${name}" --slots`, { cwd: VCAM_DIR, encoding: 'utf8' }).trim();
+      const slots = out
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith('SLOT'))
+        .map((l) => l.split('|')[1]);
+      return slots.length === 3 ? slots : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   const initialMem = inspectMemory();
   check('Shared memory mapped and readable (OBSVirtualCamVideo)', !!initialMem, JSON.stringify(initialMem));
   if (initialMem) {
@@ -393,6 +423,15 @@ class Inspector {
   const memStandby = inspectMemory();
   check('Standby state remains active (state>=1) during standby loop', memStandby && memStandby.state >= 1);
 
+  // Baseline for the standby-copy optimisation: every slot must already hold the card, and
+  // they must all hold the SAME image (the card is written once into all three slots).
+  const standbyCard = sampleSlots();
+  check(
+    'All three ring slots hold the identical standby card before any live frame',
+    !!standbyCard && standbyCard[0] === standbyCard[1] && standbyCard[1] === standbyCard[2],
+    JSON.stringify(standbyCard)
+  );
+
   // --- Test Seamless Hot-Swap to Live Frames ---
   console.log('\n--- 5. Seamless Live Frame Hot-Swapping ---');
   const jpegFrame720 = makeTestJpeg(1280, 720, 0, 200, 100);
@@ -409,6 +448,13 @@ class Inspector {
     await new Promise((r) => setTimeout(r, 20));
   }
   check('Live frames stream smoothly into shared memory', feeder.framesPushed >= 10);
+  // Proves the guard below is meaningful: live frames really do overwrite the card.
+  const liveSlots = sampleSlots();
+  check(
+    'Live phone frames overwrite the standby card in shared memory',
+    !!standbyCard && !!liveSlots && liveSlots.some((s, i) => s !== standbyCard[i]),
+    JSON.stringify({ standbyCard, liveSlots })
+  );
 
   // --- Test Automatic Fallback to Standby Loop on Disconnection ---
   console.log('\n--- 6. Disconnection Fallback to Standby Loop ---');
@@ -418,6 +464,16 @@ class Inspector {
   check('Feeder smoothly resumes 30 FPS standby loop when live frames pause/disconnect', fallbackChanges > 0, `observed ${fallbackChanges} standby frame transitions`);
   const memFallback = inspectMemory();
   check('Shared memory state remains running (state>=1) across disconnection', memFallback && memFallback.state >= 1);
+
+  // Regression guard for the standby skip-copy optimisation: slots that carried live frames
+  // must be rewritten with the card. If the invalidation is wrong, a consumer keeps showing a
+  // frozen live frame instead of the standby card.
+  const restoredCard = sampleSlots();
+  check(
+    'Standby card restored in all three ring slots after live frames stop',
+    !!standbyCard && !!restoredCard && restoredCard.every((s, i) => s === standbyCard[i]),
+    JSON.stringify({ standbyCard, restoredCard })
+  );
 
   // Multi-Resolution Ingestion: Verify shared memory stays locked to configured resolution
   // (1280x720) so DirectShow / Discord pins are never mutated in-flight, while incoming frames

@@ -8,13 +8,15 @@ const {
   formatDiagnosticMessage,
   computeSubnetRanges,
   normalizeHost,
+  isValidIp,
   intToIp,
 } = require('./network-diagnostics');
+const { decideReconnect, retryMessage } = require('./reconnect-policy');
 const {
   VirtualCamFeeder,
   registerVirtualCamera,
   unregisterVirtualCamera,
-  getVirtualCameraStatus,
+  getVirtualCameraStatusAsync,
   ensureFeederBinary,
 } = require('./vcam-feeder');
 
@@ -32,7 +34,7 @@ let lastConnectError = null;
 let connectionGeneration = 0;
 let reconnectTimer = null;
 let lastErrorTime = 0;
-let currentStreamFps = 30;
+let currentStreamFps = 60;
 
 // How many failed attempts before we give up and ask the user to act.
 const MAX_CONNECT_ATTEMPTS = 9;
@@ -96,7 +98,7 @@ function connectVideo(ip, port, codec, width, height, fps) {
   lastConnectError = null;
   const generation = connectionGeneration;
 
-  const targetFps = Number(fps) || currentStreamFps || 30;
+  const targetFps = Number(fps) || currentStreamFps || 60;
   currentStreamFps = targetFps;
 
   const feederW = vcamFeeder.currentWidth || 1920;
@@ -154,6 +156,16 @@ function connectVideo(ip, port, codec, width, height, fps) {
     }
   });
 
+  // Idle-socket watchdog. A phone that leaves Wi-Fi or sleeps without sending FIN
+  // never emits 'close', which used to leave the client "connected" with a frozen
+  // picture until the user reconnected manually. Destroying the socket funnels the
+  // failure into the normal reconnect path below.
+  sock.on('timeout', () => {
+    if (!isCurrent()) return;
+    if (!stopRequested) lastErrorTime = Date.now();
+    try { sock.destroy(); } catch (_) {}
+  });
+
   sock.on('close', () => {
     if (!isCurrent()) return;
     if (stopRequested || !isConnected) {
@@ -168,49 +180,40 @@ function scheduleReconnect(ip, port, codec, width, height, fps) {
   const generation = connectionGeneration;
   invalidateReconnectTimer();
   connectAttempts++;
-  const targetFps = Number(fps) || currentStreamFps || 30;
+  if (framesEverReceived) consecutiveReconnects++;
+  const targetFps = Number(fps) || currentStreamFps || 60;
 
-  // Once video has flowed, a drop is just a blip — reconnect quickly.
-  if (framesEverReceived && ++consecutiveReconnects <= 30) {
+  const decision = decideReconnect({
+    framesEverReceived,
+    consecutiveReconnects,
+    connectAttempts,
+    maxAttempts: MAX_CONNECT_ATTEMPTS,
+  });
+
+  if (decision.action === 'retry') {
     if (Date.now() - lastErrorTime >= 2000) {
-      sendStatus('reconnecting', 'Stream dropped — reconnecting…');
+      sendStatus('reconnecting', retryMessage(decision, MAX_CONNECT_ATTEMPTS));
     }
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height, targetFps);
-    }, 1000);
+      if (!stopRequested && isConnected && generation === connectionGeneration) {
+        connectVideo(ip, port, codec, width, height, targetFps);
+      }
+    }, decision.delayMs);
     return;
   }
 
-  // Never got a single frame: escalating backoff, then give up with guidance.
-  if (connectAttempts < 4) {
-    if (Date.now() - lastErrorTime >= 2000) {
-      sendStatus('reconnecting', `Retrying (${connectAttempts}/${MAX_CONNECT_ATTEMPTS})…`);
-    }
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height, targetFps);
-    }, 1500);
-  } else if (connectAttempts < MAX_CONNECT_ATTEMPTS) {
-    if (Date.now() - lastErrorTime >= 2000) {
-      sendStatus('reconnecting', `Still no video — retrying (${connectAttempts}/${MAX_CONNECT_ATTEMPTS})…`);
-    }
-    reconnectTimer = setTimeout(() => {
-      reconnectTimer = null;
-      if (!stopRequested && isConnected && generation === connectionGeneration) connectVideo(ip, port, codec, width, height, targetFps);
-    }, 3000);
-  } else {
-    isConnected = false;
-    const lastCode = lastConnectError && lastConnectError.code;
-    const failMsg = formatDiagnosticMessage(
-      lastCode,
-      ip,
-      port,
-      `Could not connect to ${ip}:${port}. Check: (1) OpenCam app is open and streaming (START pressed), ` +
-        '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct.'
-    );
-    sendStatus('failed', failMsg);
-  }
+  // Out of attempts: stop and tell the user what to check.
+  isConnected = false;
+  const lastCode = lastConnectError && lastConnectError.code;
+  const failMsg = formatDiagnosticMessage(
+    lastCode,
+    ip,
+    port,
+    `Could not connect to ${ip}:${port}. Check: (1) OpenCam app is open and streaming (START pressed), ` +
+      '(2) phone and PC are on the same Wi-Fi, (3) the IP is correct.'
+  );
+  sendStatus('failed', failMsg);
 }
 
 function fetchStatus(ip, port) {
@@ -268,7 +271,7 @@ ipcMain.handle('connect-stream', async (_event, { ip, port, codec, width, height
   consecutiveReconnects = 0;
   framesEverReceived = false;
   lastConnectError = null;
-  const targetFps = Number(fps) || 30;
+  const targetFps = Number(fps) || 60;
   currentStreamFps = targetFps;
   connectVideo(ip, port, codec, width, height, targetFps);
   return true;
@@ -281,10 +284,12 @@ ipcMain.handle('disconnect-stream', async () => {
 });
 
 ipcMain.handle('get-status', async (_event, { ip, port }) => {
+  if (!isValidIp(ip)) return null;
   return await fetchStatus(ip, port);
 });
 
 ipcMain.handle('push-settings', async (_event, { ip, port, params }) => {
+  if (!isValidIp(ip) || !params || typeof params !== 'object') return false;
   if (params && params.fps) {
     const newFps = parseInt(params.fps, 10);
     if (newFps > 0 && newFps !== currentStreamFps) {
@@ -381,9 +386,11 @@ ipcMain.handle('unregister-vcam', async () => {
   }
 });
 
+// Uses the non-blocking status read: the previous spawnSync variant froze the
+// renderer for up to 5 s while the feeder answered.
 ipcMain.handle('get-vcam-status', async () => {
   try {
-    return getVirtualCameraStatus();
+    return await getVirtualCameraStatusAsync();
   } catch (err) {
     return { registered: false, directShow: false, mediaFoundation: false, error: err.message };
   }
@@ -393,8 +400,8 @@ ipcMain.handle('get-vcam-status', async () => {
 app.whenReady().then(() => {
   try {
     ensureFeederBinary();
-    // Start always-on 30 FPS 1080p standby loop for virtual camera consumers
-    vcamFeeder.start({ width: 1920, height: 1080, fps: 30 });
+    // Start always-on 60 FPS 1080p standby loop for virtual camera consumers
+    vcamFeeder.start({ width: 1920, height: 1080, fps: 60 });
   } catch (err) {
     console.warn('Initial vcam binary extraction/feeder note:', err.message);
   }

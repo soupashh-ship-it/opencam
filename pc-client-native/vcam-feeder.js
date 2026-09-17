@@ -7,7 +7,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { spawn, spawnSync, execSync, exec } = require('child_process');
+const { spawn, spawnSync, execSync, exec, execFile } = require('child_process');
 
 // Bundled assets directory (may reside inside app.asar when packaged)
 const BUNDLED_VCAM_DIR = path.join(__dirname, 'vcam');
@@ -148,16 +148,18 @@ class VirtualCamFeeder {
     this.process = null;
     this.currentWidth = 1920;
     this.currentHeight = 1080;
-    this.currentFps = 30;
+    this.currentFps = 60;
     this.isStarting = false;
     this.framesPushed = 0;
     this.droppedFrames = 0;
+    this.lastStderr = '';
+    this.lastPtsUs = 0;
   }
 
   start(config = {}) {
     const width = config.width || 1920;
     const height = config.height || 1080;
-    const fps = config.fps || 30;
+    const fps = config.fps || 60;
 
     if (this.process && !this.process.killed) {
       if (this.currentWidth === width && this.currentHeight === height && this.currentFps === fps) {
@@ -176,6 +178,8 @@ class VirtualCamFeeder {
     this.currentFps = fps;
     this.framesPushed = 0;
     this.droppedFrames = 0;
+    this.lastStderr = '';
+    this.lastPtsUs = 0;
 
     try {
       const child = spawn(FEEDER_EXE, ['--feed', String(width), String(height), String(fps)], {
@@ -188,6 +192,15 @@ class VirtualCamFeeder {
         child.stdin.on('error', (_err) => {
           // Swallow EPIPE / write errors on stdin during shutdown/restart
         });
+      }
+
+      if (child.stderr) {
+        // Drain stderr. Nothing else reads this pipe, so a chatty child would block on a
+        // full 64 KB buffer. The bounded tail is kept for diagnostics.
+        child.stderr.on('data', (chunk) => {
+          this.lastStderr = appendBounded(this.lastStderr, chunk);
+        });
+        child.stderr.on('error', () => {});
       }
 
       child.on('error', (err) => {
@@ -231,12 +244,33 @@ class VirtualCamFeeder {
     }
 
     try {
+      // BigInt() throws on fractional/NaN values, which used to drop the frame
+      // silently; normalize the timestamp first.
+      //
+      // Timestamps must also be strictly increasing: the native feeder hands them to the
+      // virtual camera queue, where a backwards jump (a phone reconnect resetting its stream
+      // clock, or a local-time fallback landing above the next real PTS) makes consumers wait
+      // until the timeline catches up.
+      const rawPts = Number(ptsUs);
+      let pts;
+      if (Number.isFinite(rawPts) && rawPts > this.lastPtsUs) {
+        pts = Math.round(rawPts);
+      } else {
+        pts = Math.max(this.lastPtsUs + 1, Date.now() * 1000);
+      }
+      this.lastPtsUs = pts;
+
       const header = Buffer.allocUnsafe(12);
-      header.writeBigUInt64BE(BigInt(ptsUs || Date.now() * 1000), 0);
+      header.writeBigUInt64BE(BigInt(pts), 0);
       header.writeUInt32BE(jpegBuffer.length, 8);
 
+      // Cork so the header and payload are flushed together: two independent
+      // writes can interleave with a feeder restart and leave the pipe holding a
+      // header with no payload, which desyncs the native reader permanently.
+      this.process.stdin.cork();
       this.process.stdin.write(header);
       this.process.stdin.write(jpegBuffer);
+      this.process.stdin.uncork();
       this.framesPushed++;
       return true;
     } catch (err) {
@@ -264,27 +298,83 @@ class VirtualCamFeeder {
   }
 }
 
-/** Check Virtual Camera registration status. */
+/**
+ * Parses the feeder's `--status` stdout into a status object.
+ * Shared by the sync and async readers so both behave identically.
+ */
+function parseStatusOutput(stdout) {
+  const text = (stdout || '').trim();
+  if (!text) {
+    return { registered: false, directShow: false, mediaFoundation: false, error: 'Empty response' };
+  }
+  const jsonMatch = text.match(/\{[\s\S]*"registered"[\s\S]*\}/);
+  return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+}
+
+function emptyStatus() {
+  return { registered: false, directShow: false, mediaFoundation: false, friendlyName: 'OpenCam Virtual Camera' };
+}
+
+/** Maximum number of feeder-stderr characters kept for diagnostics. */
+const STDERR_TAIL_LIMIT = 2048;
+
+/**
+ * Append `chunk` to `previous`, keeping only the last `limit` characters.
+ * The feeder is spawned with a piped stderr that nothing used to read: once the
+ * 64 KB pipe buffer filled up, the child blocked on its next write and the stream
+ * froze with no symptom anywhere.
+ */
+function appendBounded(previous, chunk, limit = STDERR_TAIL_LIMIT) {
+  const combined = (previous || '') + (chunk == null ? '' : String(chunk));
+  return combined.length <= limit ? combined : combined.slice(combined.length - limit);
+}
+
+/**
+ * Check Virtual Camera registration status (blocking).
+ * Kept for the automated test suite; UI paths should use the async variant so a
+ * slow/absent feeder cannot stall the Electron main process.
+ */
 function getVirtualCameraStatus() {
   ensureFeederBinary();
-  if (!fs.existsSync(FEEDER_EXE)) {
-    return { registered: false, directShow: false, mediaFoundation: false, friendlyName: 'OpenCam Virtual Camera' };
-  }
+  if (!fs.existsSync(FEEDER_EXE)) return emptyStatus();
 
   try {
     const res = spawnSync(FEEDER_EXE, ['--status'], { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8', timeout: 5000 });
-    const stdout = (res.stdout || '').trim();
-    if (!stdout || stdout.length === 0) {
-      return { registered: false, directShow: false, mediaFoundation: false, error: 'Empty response' };
-    }
-    const jsonMatch = stdout.match(/\{[\s\S]*"registered"[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    return JSON.parse(stdout);
+    return parseStatusOutput(res.stdout);
   } catch (err) {
     return { registered: false, directShow: false, mediaFoundation: false, error: err.message };
   }
+}
+
+/**
+ * Check Virtual Camera registration status without blocking the caller.
+ * The blocking spawnSync variant froze the UI for up to 5 s whenever the feeder
+ * was slow to answer, which is exactly when the user is waiting for feedback.
+ */
+function getVirtualCameraStatusAsync() {
+  return new Promise((resolve) => {
+    try {
+      ensureFeederBinary();
+      if (!fs.existsSync(FEEDER_EXE)) return resolve(emptyStatus());
+      execFile(
+        FEEDER_EXE,
+        ['--status'],
+        { cwd: RUNTIME_VCAM_DIR, encoding: 'utf8', timeout: 5000, windowsHide: true },
+        (err, stdout) => {
+          if (err && !stdout) {
+            return resolve({ registered: false, directShow: false, mediaFoundation: false, error: err.message });
+          }
+          try {
+            resolve(parseStatusOutput(stdout));
+          } catch (parseErr) {
+            resolve({ registered: false, directShow: false, mediaFoundation: false, error: parseErr.message });
+          }
+        }
+      );
+    } catch (err) {
+      resolve({ registered: false, directShow: false, mediaFoundation: false, error: err.message });
+    }
+  });
 }
 
 /** Build PowerShell base64 encoded command for robust UAC elevation with space-safe argument passing. */
@@ -329,8 +419,9 @@ function registerVirtualCamera(elevateIfFailed = true) {
   // When elevation is requested, elevate with UAC prompt to register HKLM and DeviceClasses
   return new Promise((resolve) => {
     const psCmd = buildElevatedPowerShellCommand(FEEDER_EXE, '--register', RUNTIME_VCAM_DIR);
-    exec(psCmd, { timeout: 45000 }, (err) => {
-      const status = getVirtualCameraStatus();
+    exec(psCmd, { timeout: 45000 }, async (err) => {
+      // Async status read: this callback runs on the main process.
+      const status = await getVirtualCameraStatusAsync();
       if (!err && status && status.registered) {
         resolve({ success: true, message: 'OpenCam Virtual Camera registered successfully with Administrator privileges!', status });
       } else if (err && (err.code === 1223 || (err.message && err.message.includes('1223')))) {
@@ -366,8 +457,9 @@ function unregisterVirtualCamera(elevateIfFailed = true) {
 
   return new Promise((resolve) => {
     const psCmd = buildElevatedPowerShellCommand(FEEDER_EXE, '--unregister', RUNTIME_VCAM_DIR);
-    exec(psCmd, { timeout: 45000 }, (err) => {
-      const status = getVirtualCameraStatus();
+    exec(psCmd, { timeout: 45000 }, async (err) => {
+      // Async status read: this callback runs on the main process.
+      const status = await getVirtualCameraStatusAsync();
       const isUnregistered = !(status && status.registered);
       if (err && (err.code === 1223 || (err.message && err.message.includes('1223')))) {
         resolve({
@@ -390,7 +482,11 @@ module.exports = {
   VirtualCamFeeder,
   extractVcamBinaries,
   ensureFeederBinary,
+  parseStatusOutput,
+  appendBounded,
+  STDERR_TAIL_LIMIT,
   getVirtualCameraStatus,
+  getVirtualCameraStatusAsync,
   registerVirtualCamera,
   unregisterVirtualCamera,
   buildElevatedPowerShellCommand,

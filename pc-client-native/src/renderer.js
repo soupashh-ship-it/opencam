@@ -400,7 +400,7 @@ btnConnect.addEventListener('click', () => {
     hasRenderedFrame = false;
     setUiState('connecting', `Connecting to ${ip}:${port}…`);
     startFrameWatchdog();
-    const fps = userSelectedFps ? (parseInt(sliderFps.value, 10) || 30) : undefined;
+    const fps = userSelectedFps ? (parseInt(sliderFps.value, 10) || 60) : undefined;
     window.api.connectStream({ ip, port, codec, width: w, height: h, fps });
     pushCurrentSettings();
   }
