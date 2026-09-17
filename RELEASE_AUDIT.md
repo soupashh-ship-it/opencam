@@ -303,10 +303,13 @@ record shows they were originally deferred rather than missed.
 2. **26 lint warnings** (0 errors): `UseTomlInstead`, `UseKtx`, `UnusedResources`, `ObsoleteSdkInt`,
    `MonochromeLauncherIcon`, `LockedOrientationActivity`. Cosmetic/advisory; `LockedOrientationActivity`
    is intentional (the UI is portrait-locked by design).
-3. **The CI fallback release keystore** (`release.yml` generates a keystore with password `opencam123`
-   when secrets are absent). Releases built that way share a publicly known signing key. That is a
-   release-policy decision, not a bug — but for a real release you want `KEYSTORE_BASE64` and friends
-   set as repository secrets.
+3. **The CI fallback release keystore** (`release.yml` runs `keytool -genkeypair` with the password
+   `opencam123` when the signing secrets are absent). **The fallback is not in use:** all four secrets
+   (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`) are configured, and both the
+   v1.7.1 and v1.7.2 release runs logged *"Using configured GitHub repository signing secrets…"* and
+   produced the same signer digest (`c441439f…`). That is a stable release key, so users can upgrade in
+   place. The fallback is still a liability if those secrets are ever removed: it generates a fresh
+   random key per build, and an APK signed with a different key cannot replace an existing install.
 4. **Repository bloat — resolved in the follow-up round; see §8.** (Originally deferred because `.git`
    history cleanup normally requires a deliberate `filter-repo` decision rather than a drive-by change.)
 5. **`StreamManager` sets `videoClients = 0` after a client-triggered rebuild** — cosmetically wrong for
