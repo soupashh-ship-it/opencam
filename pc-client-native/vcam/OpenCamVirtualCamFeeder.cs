@@ -120,6 +120,13 @@ namespace OpenCam.VirtualCamera
             public int TotalSize;
             public string Name;
 
+            /// <summary>
+            /// Which of the three ring slots currently hold the standby card. The card is a
+            /// static image, so a slot that already holds it needs no re-copy; a slot that has
+            /// since carried a live phone frame does.
+            /// </summary>
+            public readonly bool[] StandbySlots = new bool[3];
+
             public void Dispose()
             {
                 if (View != IntPtr.Zero)
@@ -149,7 +156,11 @@ namespace OpenCam.VirtualCamera
         private static int _totalBufferSize = 0;
         private static uint _writeIndex = 0;
         private static long _frameSequence = 0;
-        private static int _currentFps = 30;
+        private static volatile int _currentFps = 60;
+        // The rate the caller explicitly configured (the --feed argument, i.e. the Studio
+        // slider). 60 is the default at every layer; any other value is a deliberate choice
+        // and must be served verbatim.
+        private static int _configuredFps = 60;
         private static byte[] _nv12Buffer = null;
 
         // Standby Feeder Loop State
@@ -193,6 +204,7 @@ namespace OpenCam.VirtualCamera
             _currentHeight = height;
             _currentFormat = format;
             _currentFps = fps;
+            _configuredFps = fps;
 
             if (format == VIDEO_FORMAT_NV12)
             {
@@ -247,6 +259,9 @@ namespace OpenCam.VirtualCamera
                             interval = interval
                         };
                         Marshal.StructureToPtr(header, mb.View, false);
+                        // The slots may still hold frames in the previous geometry, so force the
+                        // standby card to be re-copied.
+                        for (int b = 0; b < 3; b++) mb.StandbySlots[b] = false;
                     }
                 }
                 _writeIndex = 0;
@@ -333,6 +348,7 @@ namespace OpenCam.VirtualCamera
                     IntPtr slot = new IntPtr(mb.View.ToInt64() + alignedHeader + (b * slotStride));
                     Marshal.WriteInt64(slot, 0, ts100ns); // timestamp in 100ns units
                     Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
+                    mb.StandbySlots[b] = true; // all three slots now hold the standby card
                 }
                 Thread.MemoryBarrier();
                 Marshal.WriteInt32(mb.View, 0, (int)seq);          // write_idx = seq
@@ -342,7 +358,7 @@ namespace OpenCam.VirtualCamera
             _writeIndex = (uint)(seq % 3);
         }
 
-        private static void WriteFrameToSharedMemoryInternal(byte[] pixelData, ulong timestamp)
+        private static void WriteFrameToSharedMemoryInternal(byte[] pixelData, ulong timestamp, bool standby = false)
         {
             if (_mappedBuffers.Count == 0 || pixelData == null || pixelData.Length == 0) return;
 
@@ -357,7 +373,18 @@ namespace OpenCam.VirtualCamera
             {
                 if (mb.View == IntPtr.Zero) continue;
                 IntPtr slot = new IntPtr(mb.View.ToInt64() + targetOffset);
-                Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
+
+                // The standby card is a static image that is already present in every slot, so
+                // re-copying ~3 MB at the full frame rate was pure wasted bandwidth (1080p60
+                // standby ≈ 186 MB/s of memcpy while idle). Only slots that have carried a live
+                // phone frame since are rewritten. The sequence counter and timestamp still
+                // advance on every tick, so consumers keep seeing a live, current stream.
+                if (!standby || !mb.StandbySlots[nextIndex])
+                {
+                    Marshal.Copy(pixelData, 0, new IntPtr(slot.ToInt64() + FRAME_HEADER_SIZE), copyLen);
+                }
+                mb.StandbySlots[nextIndex] = standby;
+
                 Marshal.WriteInt64(slot, 0, (long)timestamp); // per-slot timestamp header
 
                 // Publish slot: memory barrier ensures pixel data is visible before sequence counters,
@@ -554,7 +581,7 @@ namespace OpenCam.VirtualCamera
                 try
                 {
                     int currentFps = _currentFps > 0 ? _currentFps : fps;
-                    int intervalMs = (currentFps > 0) ? (1000 / currentFps) : 33;
+                    int intervalMs = (currentFps > 0) ? (1000 / currentFps) : 16;
                     if (intervalMs < 1) intervalMs = 16;
                     long nowMs = _systemStopwatch.ElapsedMilliseconds;
                     long lastLiveMs = Interlocked.Read(ref _lastLiveFrameTimeTicks);
@@ -567,7 +594,7 @@ namespace OpenCam.VirtualCamera
                         {
                             if (_standbyBuffer != null && _mappedBuffers.Count > 0)
                             {
-                                WriteFrameToSharedMemoryInternal(_standbyBuffer, (ulong)_systemStopwatch.ElapsedMilliseconds * 10000UL);
+                                WriteFrameToSharedMemoryInternal(_standbyBuffer, (ulong)_systemStopwatch.ElapsedMilliseconds * 10000UL, standby: true);
                             }
                         }
                     }
@@ -624,6 +651,19 @@ namespace OpenCam.VirtualCamera
                 long lastPtsUs = 0;
                 int fastFrameStreak = 0;
                 int slowFrameStreak = 0;
+
+                // Only 30 and 60 are rates this adapter knows how to move between. For any
+                // other configured rate (the Studio slider spans 15..60) nothing adapts: the
+                // unconditional version silently replaced a 25 fps choice with 60 after two
+                // fast frames and with 30 after ten slow ones, and rewrote the shared
+                // obs-virtualcam.txt with a rate the user never selected.
+                //
+                // The up-shift is available to both 30 and 60 users; the down-shift only ever
+                // returns a 30-fps user to their own choice. A user who picked 60 keeps 60 even
+                // when the source is slow: the explicit setting wins, and consumers duplicate
+                // frames as needed (normal for a 60 fps virtual camera).
+                bool adaptUpward = (_configuredFps == 30 || _configuredFps == 60);
+                bool adaptDownward = (_configuredFps == 30);
 
                 while (_isRunning)
                 {
@@ -684,7 +724,7 @@ namespace OpenCam.VirtualCamera
                                 {
                                     fastFrameStreak++;
                                     slowFrameStreak = 0;
-                                    if (fastFrameStreak >= 2 && _currentFps != 60)
+                                    if (adaptUpward && fastFrameStreak >= 2 && _currentFps != 60)
                                     {
                                         AdaptFps(60);
                                     }
@@ -693,7 +733,7 @@ namespace OpenCam.VirtualCamera
                                 {
                                     fastFrameStreak = 0;
                                     slowFrameStreak++;
-                                    if (slowFrameStreak >= 10 && _currentFps != 30)
+                                    if (adaptDownward && slowFrameStreak >= 10 && _currentFps != 30)
                                     {
                                         AdaptFps(30);
                                     }
@@ -1161,7 +1201,7 @@ namespace OpenCam.VirtualCamera
                 {
                     int w = 1920;
                     int h = 1080;
-                    int fps = 30;
+                    int fps = 60;
                     if (args.Length > 1) int.TryParse(args[1], out w);
                     if (args.Length > 2) int.TryParse(args[2], out h);
                     if (args.Length > 3) int.TryParse(args[3], out fps);
@@ -1171,7 +1211,7 @@ namespace OpenCam.VirtualCamera
             }
 
             // Default: feed
-            RunFeeder(1920, 1080, 30);
+            RunFeeder(1920, 1080, 60);
             return 0;
         }
     }
