@@ -153,8 +153,8 @@ jobs:
             echo "Official release build for Android and Windows."
             echo
             echo "### Downloads"
-            echo "- ­ƒô▒ **Android**: \`opencam-${TAG}-release.apk\`"
-            echo "- ­ƒÆ╗ **Windows PC Studio**: \`OpenCam Studio ${TAG#v}.exe\` (Standalone Client + Virtual Camera)"
+            echo "- **Android**: \`opencam-${TAG}-release.apk\`"
+            echo "- **Windows PC Studio**: \`OpenCam.Studio.${TAG#v}.exe\` (standalone client + virtual camera)"
             echo
             echo "### Changes"
             echo
